@@ -1,0 +1,90 @@
+\documentclass[11pt,a4paper,openany]{report}
+\input{preamble}
+
+\begin{document}
+
+% Suppress page anchors on the front matter: the title page and the roman
+% sequence otherwise collide with arabic page 1 and hyperref emits duplicate
+% destination warnings.
+\hypersetup{pageanchor=false}
+
+% ===========================================================================
+\begin{titlepage}
+\centering
+\vspace*{2.2cm}
+
+{\color{RuleGrey}\rule{\textwidth}{0.6pt}}
+\vspace{1.1cm}
+
+{\Huge\bfseries Pooling Office PCs into an\\[0.35em] HTCondor Batch System\par}
+\vspace{1.0cm}
+
+{\large Design, deployment and validation of a symmetric desktop compute pool\par}
+\vspace{0.5cm}
+
+{\large\itshape spanning two subnets that cannot route to each other\par}
+
+\vspace{0.9cm}
+{\color{RuleGrey}\rule{\textwidth}{0.6pt}}
+
+\vfill
+
+\begin{minipage}{0.86\textwidth}
+\centering
+\begin{keypoint}
+\textbf{Status.} A three-machine pool is running. Remote submission works from a
+fourth machine with no login, no shared filesystem and no home directory on the
+entry node. All three policy behaviours --- suspension, eviction and admission
+closure --- have been observed firing under real load, not merely configured.
+The entry node survives a reboot with its queue, configuration and policy intact.
+\end{keypoint}
+\end{minipage}
+
+\vfill
+
+{\large Suryanarayan Mondal\par}
+\vspace{0.35cm}
+{\normalsize\today\par}
+\vspace{1.4cm}
+
+{\footnotesize\color{RuleGrey}
+This document names machine \emph{classes} only. Concrete hostnames, addresses\\
+and credentials are kept outside version control.\par}
+
+\end{titlepage}
+
+% ===========================================================================
+\pagenumbering{roman}
+\setcounter{page}{2}
+
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+\markboth{Preface}{Preface}
+\input{chapters/00-preface}
+
+\cleardoublepage
+\tableofcontents
+\cleardoublepage
+
+\hypersetup{pageanchor=true}
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+% ===========================================================================
+\input{chapters/01-introduction}
+\input{chapters/02-architecture}
+\input{chapters/03-donation}
+\input{chapters/04-owner-policy}
+\input{chapters/05-mechanism}
+\input{chapters/06-networking}
+\input{chapters/07-security}
+\input{chapters/08-deployment}
+\input{chapters/09-validation}
+\input{chapters/10-failure-modes}
+\input{chapters/11-roadmap}
+
+\appendix
+\input{appendix/a-policy-reference}
+\input{appendix/b-verification}
+
+\end{document}

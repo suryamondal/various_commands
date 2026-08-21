@@ -1,0 +1,11 @@
+# latexmk configuration.
+#
+# pdflatex, not xelatex: the build host has no xelatex and no biber, so the
+# document deliberately avoids fontspec and biblatex.
+$pdf_mode = 1;
+$pdflatex = 'pdflatex -interaction=nonstopmode -halt-on-error -file-line-error %O %S';
+
+# Keep the source directory clean: all intermediates land in build/.
+$out_dir = 'build';
+
+$clean_ext = 'synctex.gz run.xml bbl fdb_latexmk fls';

@@ -10,3 +10,7 @@ scripts/
 wifi.txt
 *.psk
 *secret*
+
+# LaTeX build products. The sources in latex/ are tracked; the output is not.
+latex/build/
+*.pdf

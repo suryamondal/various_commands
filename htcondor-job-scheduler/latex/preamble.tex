@@ -1,0 +1,153 @@
+% ---------------------------------------------------------------------------
+% Preamble. Engine: pdflatex (latexmk default).
+% xelatex and biber are not installed on the build host, so nothing here may
+% depend on fontspec or biblatex-with-biber.
+% ---------------------------------------------------------------------------
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{newtxtext,newtxmath}
+\usepackage[scaled=0.92]{inconsolata}
+\usepackage{microtype}
+
+\usepackage[
+  a4paper,
+  top=28mm, bottom=30mm, inner=30mm, outer=26mm,
+  headsep=8mm, footskip=12mm
+]{geometry}
+
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{tcolorbox}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage[labelfont=bf,font=small,skip=6pt]{caption}
+\usepackage{hyperref}
+
+\tcbuselibrary{skins,breakable}
+
+% --- palette --------------------------------------------------------------
+\definecolor{RuleGrey}{HTML}{9AA0A6}
+\definecolor{Ink}{HTML}{1A1A1A}
+\definecolor{Accent}{HTML}{1F4E79}
+\definecolor{CodeBg}{HTML}{F6F7F9}
+\definecolor{CodeKey}{HTML}{8B2E2E}
+\definecolor{CodeCmt}{HTML}{5A6B5A}
+\definecolor{WarnBg}{HTML}{FDF6EC}
+\definecolor{WarnRule}{HTML}{B5761F}
+\definecolor{FactBg}{HTML}{EFF4F8}
+\definecolor{FactRule}{HTML}{1F4E79}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=Accent, citecolor=Accent, urlcolor=Accent,
+  pdftitle={Pooling Office PCs into an HTCondor Batch System},
+  pdfsubject={Design, deployment and validation of a symmetric desktop compute pool},
+  pdfauthor={Suryanarayan Mondal},
+  bookmarksnumbered=true
+}
+
+% --- headings -------------------------------------------------------------
+\titleformat{\chapter}[display]
+  {\normalfont\Large\bfseries\color{Ink}}
+  {\normalsize\color{RuleGrey}\MakeUppercase{\chaptertitlename}\ \thechapter}
+  {6pt}{\huge}[\vspace{4pt}{\color{RuleGrey}\titlerule[0.6pt]}]
+\titlespacing*{\chapter}{0pt}{0pt}{28pt}
+
+\titleformat{\section}{\normalfont\large\bfseries\color{Ink}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries\color{Ink}}{\thesubsection}{0.7em}{}
+\titlespacing*{\section}{0pt}{16pt}{5pt}
+\titlespacing*{\subsection}{0pt}{12pt}{3pt}
+
+\setlength{\headheight}{22pt}
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{RuleGrey}\leaders\hrule height \headrulewidth\hfill}}
+\fancyhead[L]{\small\scshape\nouppercase{\leftmark}}
+\fancyhead[R]{\small\thepage}
+\fancypagestyle{plain}{\fancyhf{}\renewcommand{\headrulewidth}{0pt}\fancyfoot[C]{\small\thepage}}
+
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.25}
+
+\setlist[itemize]{leftmargin=1.3em,itemsep=2pt,topsep=4pt,parsep=0pt}
+\setlist[enumerate]{leftmargin=1.6em,itemsep=2pt,topsep=4pt,parsep=0pt}
+
+% --- code -----------------------------------------------------------------
+\lstdefinestyle{cfg}{
+  basicstyle=\ttfamily\footnotesize\color{Ink},
+  backgroundcolor=\color{CodeBg},
+  keywordstyle=\color{CodeKey}\bfseries,
+  commentstyle=\color{CodeCmt},   % Inconsolata has no italic shape
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  frame=leftline,
+  framerule=1.6pt,
+  rulecolor=\color{RuleGrey},
+  framesep=7pt,
+  xleftmargin=9pt,
+  aboveskip=9pt, belowskip=9pt,
+  morecomment=[l]{\#},
+  morekeywords={START,SUSPEND,CONTINUE,PREEMPT,WANT_SUSPEND,WANT_VACATE,RANK,
+    KILL,MaxJobRetirementTime,MachineMaxVacateTime,STARTD_CRON,DAEMON_LIST,
+    CONDOR_HOST,COLLECTOR_HOST,UID_DOMAIN,FILESYSTEM_DOMAIN,NETWORK_HOSTNAME,
+    NETWORK_INTERFACE,PRIVATE_NETWORK_NAME,PRIVATE_NETWORK_INTERFACE,
+    DEFAULT_DOMAIN_NAME,UPDATE_INTERVAL,POLLING_INTERVAL,SCHEDD_INTERVAL,
+    NUM_CPUS,JOB_RENICE_INCREMENT,CGROUP_MEMORY_LIMIT_POLICY,PREEN_INTERVAL,
+    PREEN_ARGS,MAX_JOBS_RUNNING,MAX_TRANSFER_INPUT_MB,MAX_TRANSFER_OUTPUT_MB,
+    TCP_FORWARDING_HOST,BIND_ALL_INTERFACES,ifThenElse}
+}
+\lstset{style=cfg}
+
+% Terminal transcripts: no keyword colouring, no frame rule colour shift.
+\lstdefinestyle{term}{
+  basicstyle=\ttfamily\footnotesize\color{Ink},
+  backgroundcolor=\color{CodeBg},
+  keywordstyle=\color{Ink},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=leftline,
+  framerule=1.6pt,
+  rulecolor=\color{RuleGrey},
+  framesep=7pt,
+  xleftmargin=9pt,
+  aboveskip=9pt, belowskip=9pt,
+  morecomment=[l]{\%\%}
+}
+
+% --- callouts -------------------------------------------------------------
+\newtcolorbox{keypoint}[1][]{
+  enhanced, breakable, sharp corners,
+  colback=FactBg, colframe=FactRule,
+  boxrule=0pt, leftrule=2.4pt,
+  left=9pt, right=9pt, top=7pt, bottom=7pt,
+  fontupper=\normalsize, #1
+}
+
+\newtcolorbox{trap}[1][]{
+  enhanced, breakable, sharp corners,
+  colback=WarnBg, colframe=WarnRule,
+  boxrule=0pt, leftrule=2.4pt,
+  left=9pt, right=9pt, top=7pt, bottom=7pt,
+  fontupper=\normalsize, #1
+}
+
+% --- shorthands -----------------------------------------------------------
+\newcommand{\kn}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\st}[1]{\textsc{#1}}
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}

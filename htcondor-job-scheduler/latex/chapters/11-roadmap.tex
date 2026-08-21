@@ -1,0 +1,141 @@
+\chapter{Roadmap and open risks}
+\label{ch:roadmap}
+
+\section{Phases}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l L{0.46\textwidth} Y}
+\toprule
+\textbf{Phase} & \textbf{Scope} & \textbf{Status} \\
+\midrule
+0 & Entry node install; single-machine pool; prove the submit path & \textbf{done} \\
+3 & Remote submission: IDTOKENS over one port, no shell anywhere & \textbf{done} (brought forward) \\
+--- & Contention-driven owner policy & \textbf{done} \\
+1/2 & Second and third workers; daemon tokens; jobs distribute & \textbf{done} \\
+--- & Multi-homing across two unroutable subnets & \textbf{done} \\
+4 & JupyterHub with \kn{batchspawner} CondorSpawner & not started \\
+5 & ARM workers; GPU discovery & not started \\
+6 & Overlay VPN for off-LAN machines & deferred by decision \\
+\bottomrule
+\end{tabularx}
+\caption{Phase status.}
+\end{table}
+
+Phase 3 was pulled ahead of phases 1 and 2 because it is the requirement the
+whole design exists to satisfy. Proving it early de-risked everything after it:
+had remote submission turned out to be impractical, the rest of the work would
+have been wasted.
+
+\section{Phase 4 is blocked on a storage decision}
+
+JupyterHub with \kn{batchspawner} spawns each user's notebook kernel as a Condor
+job on a worker --- which is exactly the requirement that Jupyter be allowed but
+never run on the entry node.
+
+\begin{keypoint}
+It is blocked on a decision that is not a Condor question: \textbf{where notebook
+home directories live}. Every user needs the same path visible on whichever
+worker their kernel lands on. Scratch sandboxes evaporate when the job ends, and
+notebooks must persist across sessions and across machines.
+\end{keypoint}
+
+That means an NFS export, and it is unprovisioned.
+
+\section{Heterogeneity, deferred to phase 5}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.24\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Detail} \\
+\midrule
+Architectures & x86\_64 and aarch64 \\
+Default safety net & \kn{condor\_submit} pins \kn{Requirements} to the submitting machine's architecture, so ARM capacity is invisible until explicitly opted into \\
+Cross-arch jobs & Interpreted code or multi-arch containers only \\
+Condor versions & Distribution-supplied versions differ per OS. Pin deliberately; the central manager should not be older than its workers \\
+GPUs & \kn{condor\_gpu\_discovery}, \kn{DetectedGPUs}, \kn{request\_gpus}. Jetson iGPU detection under L4T is not reliably clean --- verify, do not assume \\
+\bottomrule
+\end{tabularx}
+\caption{Heterogeneity handling.}
+\end{table}
+
+The architecture default is the right one: making ARM capacity opt-in means a
+user who has never thought about architecture cannot accidentally match a job to
+a machine that cannot run it.
+
+\section{Open risks}
+
+\subsection{Resolved}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.36\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Resolution} \\
+\midrule
+Two unroutable subnets in one pool & Solved via \kn{PRIVATE\_NETWORK\_*} with a derived, not configured, name (Chapter~\ref{ch:net}) \\
+Role alias for the entry node & Retired. \kn{avahi-publish} is not interface-aware; a machine's own hostname is \\
+Policy drift between entry node and workers & Both run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it \\
+cgroup per-job enforcement does not work on the installed build & Resolved \emph{by decision}, not by fix. Per-job caps are not wanted on machines this size; \kn{CGROUP\_MEMORY\_LIMIT\_POLICY = none} makes the configuration honest about it \\
+Suspend, memory eviction, admission closure & Verified under load (Chapter~\ref{ch:validation}) \\
+\bottomrule
+\end{tabularx}
+\caption{Risks closed.}
+\end{table}
+
+\subsection{Accepted}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.36\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Why it is accepted} \\
+\midrule
+A central-manager restart removes every worker for $\sim$10 minutes & Self-heals; invisible in \kn{condor\_status}. Lower \kn{UPDATE\_INTERVAL} if the window matters \\
+Memory eviction is only as fresh as the cron period (20\,s) & A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim \\
+A job can stay suspended indefinitely on a persistently busy machine & Accepted deliberately: it holds its claim and RSS but no CPU, and resumes when load drops. If it becomes a problem the fix is a cap on suspended time, not a shorter \kn{PREEMPT} \\
+Disk-pressure eviction is untested & The expression composes correctly with the entry node's absolute floors, but has not been exercised. Testing it means filling the volume that holds the schedd's queue \\
+\bottomrule
+\end{tabularx}
+\caption{Risks accepted with reasoning.}
+\end{table}
+
+\subsection{Open}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.36\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Status} \\
+\midrule
+Entry node SPOOL shares an 86\%-full volume with the OS, EXECUTE and \file{job\_queue.log} & \textbf{Mitigated, not fixed.} Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine \\
+The entry node's second interface is now load-bearing & If that interface drops, every worker on that segment loses its return path. Worth monitoring \\
+\kn{request\_disk} may be advisory rather than enforced & \textbf{Unverified.} If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection \\
+Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Single point of failure; must be always-on. Give it a DHCP reservation \\
+Remote submit with no local Unix account & \textbf{Unverified} --- the test user already had an account on the entry node \\
+Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
+Jetson GPU discovery & \textbf{Unverified} \\
+Shared storage for Jupyter homes & \textbf{Required, unprovisioned} \\
+\kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
+Workers lack the name-resolution guard & The entry node has an \kn{ExecStartPre} that waits for \kn{CONDOR\_HOST} to resolve; workers do not. A worker booting before avahi is ready derives the wrong network and idles until the NetworkManager hook restarts Condor \\
+Off-LAN machines & mDNS is link-local. Deferred by decision \\
+\bottomrule
+\end{tabularx}
+\caption{Risks still open.}
+\end{table}
+
+\section{The next three things}
+
+\begin{enumerate}
+  \item \textbf{Exercise disk-pressure eviction.} It is the only branch of
+        \kn{EVICT\_PRESSURE} never observed firing, and Chapter~\ref{ch:failure}
+        is eleven arguments against assuming an unobserved branch works. Fill a
+        scratch directory on the flagship worker until the floor is crossed.
+  \item \textbf{Give workers the name-resolution guard.} The self-correction path
+        exists, but the window is real and lands hardest on the machine most
+        likely to move.
+  \item \textbf{Decide the isolation model.} It is cheap now and expensive later,
+        and it gates how far the pool can grow beyond people who already trust
+        each other.
+\end{enumerate}

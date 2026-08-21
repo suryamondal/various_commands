@@ -1,0 +1,120 @@
+\chapter{Validation}
+\label{ch:validation}
+
+Everything in this chapter was observed on the running pool. The distinction
+between \emph{configured} and \emph{observed} carries unusual weight in this
+system, for reasons Chapter~\ref{ch:failure} makes explicit.
+
+\section{What has been exercised}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.34\textwidth} L{0.15\textwidth} Y}
+\toprule
+\textbf{Behaviour} & \textbf{Status} & \textbf{Evidence} \\
+\midrule
+Pool formation across two subnets & Verified & Three machines register and stay registered \\
+Remote submit, no account, no shared FS & Verified & Jobs submitted from a fourth machine distribute and return output \\
+Suspension and resumption & Verified & \S\ref{sec:obs-suspend} \\
+Memory eviction & Verified & \S\ref{sec:obs-evict} \\
+Admission closure under saturation & Verified & \S\ref{sec:closure} \\
+Reboot survival & Verified & Queue, config and policy intact \\
+Graceful degradation & Verified & Six-job cluster ran on two cores with the worker absent \\
+\kn{JOB\_RENICE\_INCREMENT} & Verified & Job niceness observed at 10 \\
+\midrule
+Disk-pressure eviction & \textbf{Untested} & Would mean filling the volume holding the schedd's queue \\
+\kn{request\_disk} enforcement & \textbf{Unverified} & May be advisory, like \kn{request\_memory} \\
+Remote submit with no local account & \textbf{Unverified} & The test user already had an account on the entry node \\
+\bottomrule
+\end{tabularx}
+\caption{Validation status. The lower block is what remains.}
+\end{table}
+
+\section{Suspension and resumption}
+\label{sec:obs-suspend}
+
+\begin{lstlisting}[style=term]
+23:34:30  load 11.12                                Busy
+23:34:40  SUSPEND is TRUE     Busy -> Suspended         (threshold 12.0)
+23:36:45  CONTINUE is TRUE    Suspended -> Busy         (resumed at 7.95)
+\end{lstlisting}
+
+The two-minute gap between suspension and resumption is the hysteresis working:
+the machine had to fall from 12.0 to below 8.0 before jobs resumed, rather than
+oscillating around a single threshold.
+
+\section{Memory eviction}
+\label{sec:obs-evict}
+
+Eleven seconds from the onset of pressure to the job leaving, through the full
+graceful path:
+
+\begin{lstlisting}[style=term]
+00:18:16  PREEMPT is TRUE        Busy -> Retiring
+00:18:16  WANT_VACATE is TRUE    Claimed/Retiring -> Preempting/Vacating
+00:18:16                         -> Owner/Idle -> Unclaimed -> Delete
+00:19:09  job re-matched, evicted again while pressure persisted
+\end{lstlisting}
+
+\section{Admission closure under saturation}
+\label{sec:closure}
+
+The clause \kn{TotalLoadAvg < TotalCpus * 0.90} is the one easiest to dismiss as
+redundant. It is not.
+
+Measured with ten jobs on the sixteen-core machine, each of which
+\emph{requested} one core and \emph{used} two:
+
+\begin{lstlisting}[style=term]
+free=5   total=19.20   nonCondor=1.26   START=false
+\end{lstlisting}
+
+Read the three numbers together:
+
+\begin{itemize}
+  \item Condor's \textbf{accounting} says five cores are free and it should send
+        more work.
+  \item \textbf{Reality} is 120\% oversubscribed.
+  \item The \textbf{owner} is idle, so \kn{NonCondorLoad} of 1.26 sits far below
+        its 8.0 threshold and that clause is fully permissive.
+\end{itemize}
+
+\begin{keypoint}
+Only the saturation ceiling closes admission here. Without it the machine would
+advertise free capacity at load 19.2 and keep accepting --- owner protected,
+machine drowning. Slot accounting is request-based and structurally cannot see
+this. Only \file{/proc} can.
+\end{keypoint}
+
+\subsection{An artifact worth knowing}
+
+When a burst of jobs exits, \kn{CondorLoadAvg} drops immediately while
+\kn{TotalLoadAvg} decays over about a minute. Their load therefore briefly
+reattributes to non-Condor and can close admission for roughly 30 seconds
+afterwards.
+
+This is self-correcting, and it explains a \kn{START=false} that appears just as
+a machine goes quiet --- which otherwise looks like a policy bug at exactly the
+moment you would least expect one.
+
+\section{Test methodology}
+
+Three rules emerged, each from a test that produced a misleading result before
+the rule existed.
+
+\textbf{Observe on the machine itself, not through the collector.}
+\kn{condor\_status} reads the collector, which is only as fresh as
+\kn{UPDATE\_INTERVAL}; it showed a frozen value for two and a half minutes during
+one attempt. \kn{condor\_status -direct} is not an alternative on workers,
+because it needs the pool signing key to verify the caller's token and only the
+entry node has it. Use \file{/proc/loadavg} for the real figure and the startd's
+own \file{StartLog} for the policy decision.
+
+\textbf{Build up slowly.} Load was raised in stages rather than jumped, so that a
+threshold crossing could be attributed to a known input rather than inferred
+afterwards.
+
+\textbf{Bound every generator with \kn{timeout}.} The deadline must be owned by
+something that survives the session dying --- a dropped ssh connection or a
+closed tmux window must not leave load or an allocation behind on a colleague's
+desktop.

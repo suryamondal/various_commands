@@ -1,0 +1,95 @@
+\chapter{Policy expression reference}
+\label{app:policy}
+
+The complete owner policy as deployed. Worker and entry node differ only where
+the schedd role requires it; those differences are marked.
+
+\section{Derived quantities}
+
+\begin{lstlisting}
+NonCondorLoad  = (TotalLoadAvg - TotalCondorLoadAvg)
+
+LOAD_ADMIT     = (TotalCpus * 0.50)      # entry node: DetectedCpus
+LOAD_SUSPEND   = (TotalCpus * 0.75)      # entry node: DetectedCpus
+
+MEM_HARD_FLOOR = ifThenElse((HostMemTotalMB * 0.10) > 1024,
+                            (HostMemTotalMB * 0.10), 1024)
+MEM_SOFT_FLOOR = (HostMemTotalMB * 0.25)
+
+# Disk floors are fractional on workers and ABSOLUTE on the entry node,
+# whose SPOOL shares a mostly-full volume with the OS.
+DISK_SOFT_FLOOR = (HostDiskTotalMB * 0.10)     # entry node: 15000
+DISK_HARD_FLOOR = (HostDiskTotalMB * 0.05)     # entry node:  8000
+\end{lstlisting}
+
+\section{Fit tests}
+
+\begin{lstlisting}
+FITS_MEM  = (TARGET.RequestMemory =?= UNDEFINED)
+         || (TARGET.RequestMemory < (HostMemAvailMB - MEM_SOFT_FLOOR))
+\end{lstlisting}
+
+The \kn{=?=} guard is not optional. A job that specifies no
+\kn{request\_memory} yields \kn{UNDEFINED}, which without the guard would make
+the whole \kn{\&\&} chain non-true and silently refuse every unspecified job.
+
+\section{The policy}
+
+\begin{lstlisting}
+EVICT_PRESSURE = (HostMemAvailMB > 0)
+              && (  (HostMemAvailMB  < MEM_HARD_FLOOR)
+                 || (HostMemPsiAvg10 > 10.0)
+                 || (HostDiskAvailMB < DISK_HARD_FLOOR) )
+
+WANT_SUSPEND = !($(EVICT_PRESSURE))
+
+START    = (NonCondorLoad   < LOAD_ADMIT)
+        && (TotalLoadAvg    < TotalCpus * 0.90)
+        && (HostCpuPsiAvg10 < 20.0)
+        && (HostMemAvailMB  > MEM_SOFT_FLOOR)
+        && (HostDiskAvailMB > DISK_SOFT_FLOOR)
+        && FITS_CPU && FITS_MEM && FITS_DISK
+
+SUSPEND  = (NonCondorLoad > LOAD_SUSPEND)
+CONTINUE = (NonCondorLoad < LOAD_ADMIT)
+PREEMPT  = $(EVICT_PRESSURE)
+
+MaxJobRetirementTime = 0
+MachineMaxVacateTime = 30
+KILL                 = FALSE
+\end{lstlisting}
+
+\section{Supporting settings}
+
+\begin{lstlisting}
+UPDATE_INTERVAL            = 30      # default 300 - see chapter 3
+SCHEDD_INTERVAL            = 30
+CGROUP_MEMORY_LIMIT_POLICY = none    # no per-job cap - see chapter 4
+JOB_RENICE_INCREMENT       = 10
+PREEN_INTERVAL             = 3600    # default 86400 - see chapter 3
+PREEN_ARGS                 = -r
+\end{lstlisting}
+
+\section{Attributes published by STARTD\_CRON}
+
+Condor publishes none of these itself. Without the cron stanza every expression
+above evaluates to \kn{UNDEFINED} and the entire policy is inert
+(\S\ref{sec:inert}).
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.30\textwidth} Y}
+\toprule
+\textbf{Attribute} & \textbf{Source} \\
+\midrule
+\kn{OwnerSessionActive} & Remote-desktop connections plus active non-greeter graphical sessions \\
+\kn{OwnerSessionReason} & Diagnostic string explaining the above \\
+\kn{HostMemAvailMB}, \kn{HostMemTotalMB} & \file{/proc/meminfo} \kn{MemAvailable}, not \kn{MemFree} \\
+\kn{HostMemPsiAvg10} & \file{/proc/pressure/memory} \\
+\kn{HostCpuPsiAvg10} & \file{/proc/pressure/cpu} \\
+\kn{HostDiskAvailMB}, \kn{HostDiskTotalMB} & The \kn{EXECUTE} filesystem \\
+\kn{HostSpoolAvailMB}, \kn{HostSpoolTotalMB} & The \kn{SPOOL} filesystem \\
+\bottomrule
+\end{tabularx}
+\caption{Attributes the policy depends on, and where each comes from.}
+\end{table}

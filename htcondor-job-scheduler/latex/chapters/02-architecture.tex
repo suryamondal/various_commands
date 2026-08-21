@@ -1,0 +1,141 @@
+\chapter{Architecture}
+\label{ch:arch}
+
+\section{Roles}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.24\textwidth} Y}
+\toprule
+\textbf{Role} & \textbf{Daemons} \\
+\midrule
+Entry node & \kn{master}, \kn{collector}, \kn{negotiator}, \kn{schedd}, \kn{startd} (limited), \kn{shared\_port} \\
+Worker & \kn{master}, \kn{startd} \\
+User PC & Worker daemons plus the submit client (\kn{condor\_submit -remote -spool}); \textbf{no schedd} \\
+\bottomrule
+\end{tabularx}
+\caption{Daemon layout by role.}
+\end{table}
+
+There is exactly one schedd, on the entry node. This is deliberate: a schedd on
+a laptop dies with the lid, taking its queue with it. Centralising it means a
+user's jobs survive their machine going to sleep, which is the normal state of a
+laptop between two meetings.
+
+\begin{keypoint}
+A user PC runs worker daemons \emph{and} the submit client, but no schedd.
+Submission is a remote operation against the entry node's queue; the local
+Condor installation exists only to donate the machine's capacity.
+\end{keypoint}
+
+\section{Choosing the entry node}
+
+The selected class is a \textbf{low-power four-core mini-PC}, not the pool's
+highest-core machine. That is counter-intuitive enough to justify.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.22\textwidth} Y}
+\toprule
+\textbf{Criterion} & \textbf{Finding} \\
+\midrule
+Role bottleneck & \kn{fsync} latency on \file{job\_queue.log}, RAM per shadow, and NIC bandwidth --- not CPU \\
+Core count & Sixteen threads buy nothing for this role, and the high-core machine is the pool's only one \\
+Commodity & The four-core class is the fleet's repeated unit; the flagship is scarce \\
+Test validity & The production entry node will be commodity class. Testing on the flagship would teach nothing transferable \\
+Scaling path & Horizontal --- add schedds, or split collector and negotiator off. Never vertical \\
+\bottomrule
+\end{tabularx}
+\caption{Entry node selection criteria.}
+\end{table}
+
+Spending the pool's only sixteen-thread machine on a role bounded by disk
+latency would waste its one genuinely scarce resource. It is worth far more as a
+worker, and that is where it sits.
+
+Requirements for whichever machine holds the role: \kn{SPOOL} on NVMe, and about
+half its cores donated to compute with the remainder reserved for the daemons.
+
+\section{Machine classes}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.27\textwidth} l l l l l}
+\toprule
+\textbf{Class} & \textbf{Arch} & \textbf{Cores} & \textbf{RAM} & \textbf{Disk free} & \textbf{Count} \\
+\midrule
+Mini-PC (entry + worker) & x86\_64  & 4   & 16\,G & 30--70\,G & 8+, growing \\
+Flagship worker          & x86\_64  & 16  & 31\,G & $\sim$270\,G & 1 \\
+Laptop                   & x86\_64  & 12  & 8\,G  & $\sim$250\,G & 1+ \\
+Edge SBC                 & aarch64  & 4   & 4\,G  & $\sim$36\,G (SD) & 1+ \\
+Jetson                   & aarch64  & TBD & TBD   & TBD & future, GPU \\
+\bottomrule
+\end{tabularx}
+\caption{Hardware classes in the fleet.}
+\end{table}
+
+Distributions: Ubuntu 24.04 LTS on x86\_64, Debian 13 on the edge SBC, and L4T
+expected on the Jetsons. Three distributions and two architectures is the point
+at which ``just ship the binary'' stops working; Chapter~\ref{ch:roadmap}
+returns to it.
+
+\section{The submission path}
+
+\begin{lstlisting}[style=term]
+user's own PC                    entry node                    worker
+-------------                    ----------                    ------
+condor_submit -remote -spool ->  schedd accepts job
+                                 input files land in SPOOL
+                                 negotiator matches       ->    startd claims
+                                 shadow forks             <->   starter runs job
+                                 output returns to SPOOL
+condor_transfer_data          <- output released
+\end{lstlisting}
+
+Two properties of this path matter more than they first appear.
+
+\textbf{The user needs no account anywhere except an authentication token.}
+Submission is authenticated with IDTOKENS over a single TCP port; there is no
+shell, no home directory and no shared filesystem involved.
+
+\textbf{All job I/O funnels through the shadows on the entry node.} That is the
+pool's scaling limit --- not CPU, not RAM. Chapter~\ref{ch:donation} sizes the
+disk defences around it, and the answer for genuinely large data is shared
+storage with a matching \kn{FILESYSTEM\_DOMAIN} so that matched jobs skip
+transfer entirely, not a bigger entry node.
+
+\section{Workload constraints}
+
+Eviction is the normal case in this design, not an exception, and users have to
+be told so up front.
+
+\begin{itemize}
+  \item Many short jobs, not few long ones. A ten-hour job on a desktop may never complete.
+  \item Jobs must be idempotent --- restartable from scratch without corrupting state.
+  \item Long work uses self-checkpointing (\kn{checkpoint\_exit\_code}).
+  \item ``My job keeps restarting'' is a design property of a desktop pool, not a bug.
+\end{itemize}
+
+\section{Scheduling and fairness}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.30\textwidth} Y}
+\toprule
+\textbf{Mechanism} & \textbf{Purpose} \\
+\midrule
+\kn{condor\_userprio} fair-share & Heavy recent users decay in priority automatically \\
+Machine \kn{RANK} & Owner preference on their own hardware \\
+\kn{NEGOTIATOR\_PRE\_JOB\_RANK} & Fill the entry node last \\
+\kn{MAX\_JOBS\_RUNNING} & Ceiling on concurrent shadows; converts ``entry node falls over'' into ``jobs stay queued'' \\
+\kn{MAX\_TRANSFER\_INPUT\_MB} & Refuse fat submissions rather than filling spool \\
+\bottomrule
+\end{tabularx}
+\caption{Fairness and self-defence mechanisms.}
+\end{table}
+
+\kn{RANK = (RemoteOwner =?= "<owner>")} gives each owner first call on their own
+machine, including preempting a stranger's job. This is the adoption lever. The
+failure mode it defends against is quiet: nobody files a bug when Condor makes
+their PC stutter --- they run \kn{systemctl disable condor}, and the pool
+shrinks without anyone noticing.

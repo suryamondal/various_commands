@@ -1,0 +1,112 @@
+\chapter{Deployment, restart and recovery}
+\label{ch:deploy}
+
+\section{Configuration management is the bulk of the work}
+
+Not scheduling. Every machine needs an install, a configuration, a token, and
+then repeated revisions of the owner policy as the policy is refined.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.20\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Decision} \\
+\midrule
+Channel & The existing authenticated ssh fan-out to every host \\
+Layout & \file{/etc/condor/config.d/} drop-ins, rendered from the repository \\
+Loop & render $\rightarrow$ push $\rightarrow$ \kn{condor\_reconfig} \\
+Slot changes & Require \kn{condor\_restart} of the startd, not \kn{condor\_reconfig} \\
+Verification & \kn{condor\_config\_val -v <KNOB>} --- never trust the file, \file{config.d} precedence bites \\
+\bottomrule
+\end{tabularx}
+\caption{Deployment mechanics.}
+\end{table}
+
+\section{Adding a worker}
+
+\begin{enumerate}
+  \item Install the package.
+  \item Drop in the worker configuration: \kn{CONDOR\_HOST},
+        \kn{DEFAULT\_DOMAIN\_NAME}, \kn{UID\_DOMAIN}, donation limits, the owner
+        policy, and the \kn{STARTD\_CRON} stanza.
+  \item Install \kn{condor-owner-session} to \file{/usr/local/bin} (mode 755).
+  \item Install a \textbf{daemon} token to \file{/etc/condor/tokens.d/} (600, root).
+  \item Restart, then confirm the machine appears in \kn{condor\_status}
+        \textbf{and} that a job actually lands on it.
+\end{enumerate}
+
+Step 4 is the one that is easy to miss, for the reason given in
+Chapter~\ref{ch:security}. Step 5's second clause is not redundant with its
+first: appearing in \kn{condor\_status} and accepting work are independent
+properties, and Chapter~\ref{ch:failure} catalogues several ways to have the
+first without the second.
+
+\section{What survives a reboot}
+
+Verified by rebooting the entry node.
+
+Everything survives, provided the services are enabled: configuration drop-ins,
+the \file{/usr/local/bin} helpers, the pool signing key, and --- importantly ---
+the \textbf{job queue}. Completed jobs were still in \file{job\_queue.log}
+afterwards.
+
+The pool also degrades gracefully rather than failing. With the worker absent it
+ran a six-job cluster on the entry node's two donated cores and queued the
+remainder.
+
+\section{A central-manager restart costs about two update intervals}
+\label{sec:cmrestart}
+
+Workers do \textbf{not} come back promptly. The observed sequence:
+
+\begin{lstlisting}[style=term]
+17:19:41  collector starts as a NEW process
+17:19:45  worker MASTER update  -> "SECMAN: Server rejected our session id"
+17:24:00  worker STARTD update  -> "SECMAN: Server rejected our session id"
+17:29:00  worker STARTD update  -> succeeds, re-registers
+\end{lstlisting}
+
+Each daemon holds a cached security session tied to the \emph{old} collector
+process. It spends one full update cycle discovering that the session is dead,
+invalidates it, and only re-authenticates on the \textbf{next} cycle --- about
+ten minutes at the default 300-second \kn{UPDATE\_INTERVAL}.
+
+\begin{trap}
+It self-heals with no intervention, but \textbf{nothing in \kn{condor\_status}
+explains it} --- the machine is simply missing. With many workers they all
+disappear together after any entry-node restart, which looks like a catastrophe
+and is not.
+\end{trap}
+
+The evidence lives in \file{CollectorLog} (\kn{DC\_AUTHENTICATE: attempt to open
+invalid session}) and in the worker's own log (\kn{SECMAN: Invalidating
+negotiated session rejected by peer}). Restarting Condor on a worker clears its
+sessions and re-registers it immediately.
+
+\section{Startup ordering must be enforced, not assumed}
+
+\kn{CONDOR\_HOST} is an mDNS name. At boot, Condor and avahi started \textbf{in
+the same second} and it worked only by a hair.
+
+If Condor wins that race, its daemons come up unable to reach their own
+collector, and each then sits out a full update interval before retrying. The
+pool looks alive and does nothing --- the recurring signature described in
+Chapter~\ref{ch:failure}.
+
+\begin{trap}
+\kn{After=} alone is insufficient. A \kn{Type=simple} unit is considered started
+the moment it execs, which is before the name it publishes has been established.
+\end{trap}
+
+Wait for the \textbf{condition} instead, via an \kn{ExecStartPre} that blocks
+until the name resolves. Ship it as a \file{condor.service.d/} drop-in ---
+editing the packaged unit gets silently reverted on upgrade --- and have the
+script \textbf{always exit 0}, so a slow name can never hang a boot.
+
+\section{Do not list a daemon whose package is not installed}
+
+\kn{KBDD} in \kn{DAEMON\_LIST} without \kn{condor-kbdd} present makes the master
+log \kn{Cannot execute (errno=2)} and retry every 34 minutes, forever.
+
+Workers whose policy references neither \kn{ConsoleIdle} nor \kn{KeyboardIdle}
+--- which, after \S\ref{sec:console}, is all of them --- should not run it at all.

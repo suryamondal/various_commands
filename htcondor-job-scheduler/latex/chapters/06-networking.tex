@@ -1,0 +1,223 @@
+\chapter{Naming and networking}
+\label{ch:net}
+
+Nothing in the pool configuration names a machine or an IP address. Concrete
+values live outside version control.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.26\textwidth} L{0.26\textwidth} Y}
+\toprule
+\textbf{Layer} & \textbf{Value} & \textbf{Resolved how} \\
+\midrule
+Pool entry point & entry node's real hostname & mDNS, answered per interface \\
+Principal namespace & \kn{<pool>.internal} & Never resolved; keeps IDTOKENS stable across naming changes \\
+Host qualification & \kn{DEFAULT\_DOMAIN\_NAME = local} & Satisfies \kn{get\_full\_hostname()} \emph{and} is avahi-resolvable \\
+Worker addresses & Advertised in each ClassAd & Condor dials them directly \\
+\kn{FILESYSTEM\_DOMAIN} & Per-host default, never pool-wide & A shared value makes Condor skip file transfer entirely \\
+\bottomrule
+\end{tabularx}
+\caption{Naming layers and how each is resolved.}
+\end{table}
+
+\section{Why names, not addresses}
+
+Condor routes by \textbf{advertised address} --- the sinful string each daemon
+puts in its ClassAd --- and never by resolving a name at connect time.
+
+\begin{keypoint}
+A worker that changes IP address is reachable again at its next collector update.
+\textbf{DHCP churn on workers needs no DNS, no hosts file, and no action at all.}
+Only the entry node must be findable by name, because every worker's
+\kn{CONDOR\_HOST} points at it.
+\end{keypoint}
+
+\section{Why the pool must have a domain}
+
+\kn{condor\_submit -remote} and \kn{condor\_q -name} call
+\kn{get\_full\_hostname()}, which \textbf{rejects any name without a dot}.
+
+A pool of bare hostnames cannot use remote submission at all --- which, given
+that remote submission is the entire point of this design, makes the domain a
+hard requirement rather than a tidiness preference.
+\kn{DEFAULT\_DOMAIN\_NAME = local} qualifies every name and stays resolvable
+through avahi via nsswitch (\kn{files mdns4\_minimal ... dns mdns4}).
+
+\section{A multi-homed entry node serving two unroutable networks}
+
+The pool spans two subnets that cannot route to each other, and machines move
+between them --- both networks have ethernet and wifi, and a machine parks
+wherever it happens to be. Plugging in a cable is not an option.
+
+This works, using HTCondor's documented multi-homing support. An earlier revision
+of this project's notes concluded it was impossible; that was wrong, and the
+correction is the substance of this section.
+
+\subsection{Why it looks impossible at first}
+
+\kn{BIND\_ALL\_INTERFACES} is true and the daemons listen on \kn{0.0.0.0:9618},
+so they \emph{accept} on every address. But a daemon advertises \textbf{one
+primary address}, and peers are told to dial that one.
+
+The result is a failure that mostly looks like success:
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.30\textwidth} L{0.28\textwidth} Y}
+\toprule
+\textbf{Direction} & \textbf{Initiator} & \textbf{Result} \\
+\midrule
+worker $\rightarrow$ collector (register, update) & Worker dials \kn{CONDOR\_HOST} & Works --- outbound \\
+shadow $\rightarrow$ startd (claim) & Entry node dials the worker & Works \\
+\textbf{starter $\rightarrow$ shadow (file transfer)} & \textbf{Worker dials the shadow's advertised address} & \textbf{Fails} \\
+\bottomrule
+\end{tabularx}
+\caption{Three of four directions work, which is what makes this hard to see.}
+\end{table}
+
+\begin{trap}
+The machine registers, jobs match, jobs \textbf{run to completion} --- and then
+the return channel fails, the work is discarded, the job is re-queued, and it
+loops, burning slots while \kn{condor\_status} shows a perfectly healthy machine.
+\end{trap}
+
+Two obvious fixes do not work, both tested:
+
+\begin{itemize}
+  \item \kn{NETWORK\_INTERFACE} with two addresses is accepted as a value, but
+        \kn{addrs=} still carries one IPv4. The manual is explicit: \emph{``HTCondor
+        daemons can only advertise two IP addresses\ldots One is the public IP
+        address and the other is the private IP address.''}
+  \item \kn{TCP\_FORWARDING\_HOST} set to a hostname is resolved \textbf{locally
+        at startup} and baked in as a single IP --- and it silently flipped the
+        primary to the wifi address, which would have broken the wired machines
+        instead.
+\end{itemize}
+
+Sinful strings are address-based by design: resolution happens once, at the
+advertiser, and every peer receives the same string.
+
+\subsection{What does work}
+
+\kn{PRIVATE\_NETWORK\_NAME} and \kn{PRIVATE\_NETWORK\_INTERFACE}. The entry node
+publishes \textbf{both} addresses; a peer uses the private one if it declares a
+matching \kn{PRIVATE\_NETWORK\_NAME}, and the primary otherwise.
+
+Two addresses is exactly enough for two networks.
+
+\begin{lstlisting}
+entry node:  PRIVATE_NETWORK_NAME      = $(FULL_HOSTNAME)
+             PRIVATE_NETWORK_INTERFACE = <interface on the private segment>
+
+advertises:  <PRIMARY:9618?PrivAddr=<PRIVATE:9618>
+                          &PrivNet=<entry node hostname>&...>
+\end{lstlisting}
+
+The catch is that the choice is made by the \textbf{reader}. A hardcoded value on
+a worker is silently wrong the moment that machine moves --- which, in a fleet
+where machines move constantly, means it is wrong most of the time.
+
+\subsection{Deriving it instead of configuring it}
+
+\kn{PRIVATE\_NETWORK\_NAME} defaults to the machine's own \kn{FULL\_HOSTNAME},
+which can never match another machine's --- so the default already means
+\emph{``use the primary address''}. Only machines on the private segment need to
+do anything, and they can work it out for themselves:
+
+\begin{lstlisting}[style=term]
+1. resolve CONDOR_HOST      -> avahi answers per-interface, giving the
+                               address reachable from HERE
+2. ask the collector        -> its PrivAddr and its PrivNet name
+3. reached it on PrivAddr?  -> adopt that PrivNet
+   otherwise                -> write nothing; the default is already correct
+\end{lstlisting}
+
+\begin{keypoint}
+The worker holds \textbf{no network fact, no address and no name}. It learns
+everything from the entry node at startup. The same file goes on every machine,
+and two workers on opposite segments reach opposite conclusions from identical
+inputs.
+\end{keypoint}
+
+Wire it as an \kn{ExecStartPre} on \kn{condor.service} plus a NetworkManager
+dispatcher hook that restarts Condor \textbf{only when the derivation changes},
+so a routine lease renewal does not evict running jobs.
+
+\textbf{Fail safe:} any error --- name unresolvable, collector unreachable, ad
+unparseable --- must write \textbf{nothing}, never a stale name. Stale is
+precisely the failure this mechanism exists to prevent.
+
+The derivation needs root, since querying the collector uses the daemon token in
+\file{/etc/condor/tokens.d/}; running it as \kn{ExecStartPre} satisfies that.
+
+\section{Why a role alias failed, and was retired}
+
+The original design pointed configuration at the \emph{role} rather than at
+whichever machine currently held it. Moving the entry node would mean starting an
+alias service on the new box and stopping it on the old one, with no worker
+changes at all. Two pieces were needed together:
+
+\begin{itemize}
+  \item \textbf{An mDNS alias}, fixing address lookups. avahi has no CNAME
+        support, so a small service publishes \kn{avahi-publish -a} and
+        republishes if the address changes. Publish with \kn{-R}: the real
+        hostname already owns the reverse record, and a second one makes reverse
+        lookups ambiguous --- which breaks Condor's security layer, not DNS.
+  \item \textbf{\kn{NETWORK\_HOSTNAME}}, fixing name lookups. Without it the
+        schedd still advertises its hardware name and \kn{-remote <alias>} fails
+        with ``Can't find address of schedd''. \kn{SCHEDD\_NAME} cannot
+        substitute: with no \kn{@} it becomes
+        \kn{\$(SCHEDD\_NAME)@\$(FULL\_HOSTNAME)}.
+\end{itemize}
+
+\begin{trap}
+\textbf{The alias was what broke multi-homing.} \kn{avahi-publish -a} binds a
+name to \emph{one literal address} with no interface awareness, so the alias
+answered every querier with the same address regardless of which network they
+were on. Pointing \kn{NETWORK\_HOSTNAME} at it then forced the daemons to bind
+and advertise that single address.
+\end{trap}
+
+A machine's \textbf{own} hostname behaves differently: avahi answers
+per-interface, giving each querier the address it can actually reach. Verified
+from both sides --- the same real hostname resolved to the wired address from the
+wired LAN and to the wifi address from wifi.
+
+So \kn{CONDOR\_HOST} names the machine. The cost is losing role indirection:
+relocating the entry node means updating \kn{CONDOR\_HOST} on every worker.
+Correctness across networks beats the abstraction.
+
+\section{Why UID\_DOMAIN is deliberately different}
+
+\kn{UID\_DOMAIN} is a principal namespace and is never resolved as a hostname.
+Keeping it distinct from \kn{DEFAULT\_DOMAIN\_NAME} means the naming scheme can
+change without invalidating every token. Tokens carry
+\kn{<user>@<pool>.internal}.
+
+\begin{trap}
+\textbf{Changing \kn{UID\_DOMAIN} invalidates every token.} Old tokens still
+authenticate, but map to a different principal --- silently splitting fair-share
+accounting rather than failing visibly.
+\end{trap}
+
+\section{Operational notes, learned the hard way}
+
+\begin{itemize}
+  \item Changing \kn{DEFAULT\_DOMAIN\_NAME} or \kn{NETWORK\_HOSTNAME} changes
+        daemon names, so it needs a \textbf{restart}, not \kn{condor\_reconfig}.
+  \item \textbf{Install configuration and restart in one step.} A daemon that
+        fails to resolve the collector at startup does not retry until its next
+        update interval, leaving ads missing for minutes.
+  \item \kn{CONDOR\_HOST = \$(FULL\_HOSTNAME)} stops resolving the moment the
+        domain changes, until that name resolves \emph{on the entry node itself}.
+        Daemons come up but cannot reach their own collector.
+  \item Hold code 16 (\kn{Spooling input data files}) is transient and normal
+        during \kn{-spool} submission, not a failure.
+  \item avahi can serve cached names for dead hosts, and \kn{getent} may return
+        an IPv6 link-local address for a \kn{.local} name where avahi's IPv4
+        answer is correct. Neither has broken anything yet; both are plausible
+        sources of intermittent failures.
+\end{itemize}
+
+Vanilla-universe jobs need no worker-to-worker connectivity --- every
+conversation is entry node to worker. The entry node is a star hub, not a router.

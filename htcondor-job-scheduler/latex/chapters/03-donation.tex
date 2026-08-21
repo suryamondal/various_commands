@@ -1,0 +1,135 @@
+\chapter{Resource donation}
+\label{ch:donation}
+
+\section{Donate everything; protect dynamically}
+
+The instinct when pooling somebody's desktop is to hold capacity back --- donate
+half the cores, cap memory at a quarter --- so the owner always has room. This
+design does the opposite on workers, and the reason is that static reservation
+and the contention policy of Chapter~\ref{ch:policy} defend against the same
+thing.
+
+\begin{keypoint}
+Holding capacity back only idles it in the common case, which is that nobody is
+using the machine. The policy would suspend anyway the moment someone arrives.
+Reservation buys nothing the policy does not already provide, and costs
+throughput continuously.
+\end{keypoint}
+
+That applies to workers. The \textbf{entry node is deliberately different},
+because it carries the collector, negotiator and schedd: if the schedd cannot
+fork shadows or \kn{fsync} its queue, nothing anywhere in the pool runs.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.16\textwidth} L{0.19\textwidth} L{0.19\textwidth} Y}
+\toprule
+\textbf{Resource} & \textbf{Worker} & \textbf{Entry node} & \textbf{Why they differ} \\
+\midrule
+CPU & \textbf{all threads} & reserve $\sim$half & Daemons need guaranteed headroom \\
+Memory & \textbf{90\%} offered & $\sim$35\% offered & One shadow per running job, pool-wide \\
+Disk & reserved + tiers & reserved + tiers \textbf{+ transfer caps} & SPOOL is the funnel every job crosses \\
+Load scaling & \kn{TotalCpus} & \textbf{\kn{DetectedCpus}} & See \S\ref{sec:detectedcpus} \\
+Load thresholds & 0.50 / 0.75 & 0.50 / 0.75 & Now identical; see \S\ref{sec:looser} \\
+\bottomrule
+\end{tabularx}
+\caption{Donation policy: worker versus entry node.}
+\end{table}
+
+\section{Scale on DetectedCpus, not TotalCpus}
+\label{sec:detectedcpus}
+
+\kn{TotalCpus} is what Condor \emph{advertises}, capped by \kn{NUM\_CPUS}, while
+\kn{TotalLoadAvg} is measured across the \emph{whole machine}. On a four-core box
+advertising two, scaling load thresholds by \kn{TotalCpus} compares a four-core
+load against a two-core yardstick: the machine reads as saturated while half of
+it sits idle.
+
+Workers where \kn{NUM\_CPUS} is unset are unaffected only by coincidence. The
+entry node, which does cap it, is affected directly --- which is where this was
+found.
+
+\section{The entry node's thresholds must be looser}
+\label{sec:looser}
+
+\kn{condor\_shadow} processes are children of the \textbf{schedd}, not the
+startd, and are therefore \textbf{not} counted in \kn{CondorLoadAvg}.
+
+Every file transfer the entry node brokers for the whole pool consequently lands
+in \kn{NonCondorLoad} and looks exactly like owner activity. Worker-tight
+thresholds would make the entry node close admission --- and flap its own
+running jobs --- purely for doing the job it exists to do.
+
+\section{Fractions scale; absolute headroom does not}
+
+Load thresholds are expressed as \kn{TotalCpus} $\times$ fraction, which travels
+across machine sizes. The \emph{slack} such a threshold leaves does not.
+
+At a fraction of 0.25, a sixteen-core box has 4.0 of headroom while a four-core
+box has 1.0 --- and a desktop with a browser open already idles above that.
+
+\begin{trap}
+\textbf{Measured.} A four-core desktop, otherwise idle, reported non-Condor load
+of \textbf{1.23} against a 1.0 threshold. It refused every job it was offered
+while \kn{condor\_status} showed it healthy and \st{Unclaimed}. Nothing was
+broken; the threshold was simply below the machine's floor.
+\end{trap}
+
+The values became 0.50 to admit and 0.75 to suspend. Admitting while the owner
+uses half the machine is safe, because \kn{JOB\_RENICE\_INCREMENT} means Condor
+jobs lose the CPU to the owner instantly. The gap between the two values is
+deliberate hysteresis --- equal thresholds make jobs flap.
+
+\section{Disk floors: absolute on the entry node, fractional on workers}
+
+A fraction suits a volume dedicated to Condor. The entry node's \kn{SPOOL},
+\kn{EXECUTE}, \file{job\_queue.log} and operating system share one filesystem
+that is already around 86\% full of unrelated data. What the OS needs there is a
+\textbf{fixed reserve}, not a percentage of a large, mostly-full disk.
+
+\section{SPOOL cannot be protected by the startd policy}
+
+\kn{condor\_submit -spool} writes into \kn{SPOOL} at \textbf{submit} time,
+before any matchmaking happens, so \kn{START} never sees it. The startd policy
+--- the entire subject of the next chapter --- is structurally incapable of
+defending this.
+
+The only controls are schedd-side: \kn{MAX\_TRANSFER\_INPUT\_MB} and
+\kn{MAX\_TRANSFER\_OUTPUT\_MB}. Size them against the disk that actually exists.
+
+\begin{trap}
+At 2048\,MB per job with 32\,GB free, \textbf{sixteen concurrent submissions
+fill the volume} --- and \kn{MAX\_JOBS\_RUNNING} permits 200. Filling SPOOL
+stops the schedd writing its queue, which stops the \textbf{entire pool}.
+\end{trap}
+
+\section{Advertisement cadence}
+
+\kn{UPDATE\_INTERVAL} defaults to 300 seconds, a value sized for pools of
+thousands of machines. At this scale an advertisement every 30 seconds is free,
+and the default costs twice over:
+
+\begin{itemize}
+  \item \kn{condor\_status} showed a frozen value for two and a half minutes
+        while load was driven from 1 to 15.
+  \item After a central-manager restart, workers took roughly twice the interval
+        to reappear --- one cycle to discover their cached security session was
+        dead, another to re-authenticate (\S\ref{sec:cmrestart}).
+\end{itemize}
+
+\begin{keypoint}
+Lowering \kn{UPDATE\_INTERVAL} does \textbf{not} change how fast policy reacts.
+The startd evaluates \kn{START}, \kn{SUSPEND} and \kn{PREEMPT} every
+\kn{POLLING\_INTERVAL} --- five seconds --- regardless. The default made the
+policy \emph{invisible} and re-registration slow. It did not make the policy slow.
+\end{keypoint}
+
+\section{Sandbox hygiene}
+
+The starter removes a job's scratch directory as soon as output transfer
+completes, so the normal path already reclaims immediately.
+
+The leak is \textbf{orphans}: crashed starters, evicted jobs, held jobs. Nothing
+reaps those until \kn{condor\_preen} runs, which defaults to \textbf{once every
+24 hours}. On a design whose binding constraint is disk, that is the actual
+failure mode. Set \kn{PREEN\_INTERVAL} to an hour with \kn{PREEN\_ARGS = -r}.

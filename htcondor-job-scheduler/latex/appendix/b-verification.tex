@@ -1,0 +1,108 @@
+\chapter{Verification commands}
+\label{app:verify}
+
+The checks that discriminate between a working policy and a dead one. Ordered by
+how often they were the one that mattered.
+
+\section{Is the policy actually live?}
+
+\begin{lstlisting}[style=term]
+condor_status -af Name Start OwnerSessionActive HostMemAvailMB HostDiskAvailMB
+\end{lstlisting}
+
+Reads the \textbf{slot ad}. If a policy attribute is missing here, the policy is
+dead no matter what the configuration says. Allow one update interval, or force
+a fresh ad with \kn{condor\_reconfig}.
+
+\section{Why is this machine not taking work?}
+
+\begin{lstlisting}[style=term]
+condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 \
+                       HostMemAvailMB HostDiskAvailMB
+\end{lstlisting}
+
+Every term in \kn{START} beside its threshold. A machine can show free slots and
+still decline work --- that is the design, not a fault.
+
+\section{What did the startd actually decide?}
+
+\begin{lstlisting}[style=term]
+grep -iE 'suspend|continue|changing activity|changing state' \
+     /var/log/condor/StartLog | tail -25
+\end{lstlisting}
+
+The only place claim refusals are recorded. \kn{Request to claim resource
+refused} and \kn{Claiming protocol failed} appear here and nowhere else.
+
+\section{Is the pool intact?}
+
+\begin{lstlisting}[style=term]
+condor_status -af Name State Activity TotalLoadAvg HostMemAvailMB Start
+condor_q -totals
+\end{lstlisting}
+
+\section{Did the configuration take?}
+
+\begin{lstlisting}[style=term]
+condor_config_val -v <KNOB>
+\end{lstlisting}
+
+\begin{trap}
+Necessary but far from sufficient. Every defect in Chapter~\ref{ch:failure}
+printed a correct value here. The \kn{-v} flag at least reveals \emph{which} file
+in \file{config.d} won, which is its real use --- precedence bites.
+\end{trap}
+
+\section{Observing under load}
+
+\begin{lstlisting}[style=term]
+cut -d' ' -f1 /proc/loadavg          # the real figure, not the collector's
+awk '/^MemAvailable:/ {print int($2/1024)" MB"}' /proc/meminfo
+cat /proc/pressure/cpu /proc/pressure/memory
+\end{lstlisting}
+
+\begin{trap}
+Do not use \kn{condor\_status} to observe a stress test: it reads the collector
+and is only as fresh as \kn{UPDATE\_INTERVAL}. It showed a frozen value for two
+and a half minutes while load was driven from 1 to 15.
+
+\kn{condor\_status -direct} is not an alternative on a worker --- it needs the
+pool signing key to verify the caller's token, and only the entry node has it.
+\end{trap}
+
+\section{Load generation}
+
+Both generators must be self-terminating, with \kn{timeout} owning the deadline
+so nothing survives a dropped session.
+
+\begin{lstlisting}[style=term]
+%% CPU: tight loop, no fork per iteration
+timeout "$SECS" sh -c 'while :; do :; done'
+
+%% Memory: touch one byte per page so the pages are genuinely resident
+timeout "$SECS" python3 -c '
+import sys, time
+mb = int(sys.argv[1])
+buf = bytearray(mb * 1024 * 1024)
+for i in range(0, len(buf), 4096):
+    buf[i] = 1
+time.sleep(int(sys.argv[2]))
+' "$MB" "$SECS"
+\end{lstlisting}
+
+An untouched allocation is virtual only, and \kn{MemAvailable} would not move ---
+the test would appear to fail while never having applied any pressure.
+
+\section{Testing eviction without endangering the machine}
+
+Raise the floor to meet the memory rather than driving the machine into genuine
+pressure. Override \textbf{both} expressions:
+
+\begin{lstlisting}
+PREEMPT      = (HostMemAvailMB < <just under current availability>)
+WANT_SUSPEND = !(HostMemAvailMB < <the same value>)
+\end{lstlisting}
+
+Overriding \kn{PREEMPT} alone leaves \kn{WANT\_SUSPEND} on the real floor, where
+it stays true, so \kn{SUSPEND} is consulted instead and the test fails for the
+wrong reason.

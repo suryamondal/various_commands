@@ -1,0 +1,114 @@
+\chapter{Mechanism selection: WANT\_SUSPEND}
+\label{ch:mechanism}
+
+This is the single most important knob in the policy, and the least obvious.
+
+\section{What it actually does}
+
+\kn{WANT\_SUSPEND} does not enable or disable suspension. When the startd decides
+a job must go, it decides \textbf{which expression the startd consults}:
+
+\begin{lstlisting}
+WANT_SUSPEND true   ->  consults SUSPEND;  PREEMPT is ignored
+WANT_SUSPEND false  ->  consults PREEMPT;  SUSPEND is ignored
+\end{lstlisting}
+
+\begin{keypoint}
+They are \textbf{alternatives, not layers}. A configuration containing a
+carefully-written \kn{SUSPEND} and a carefully-written \kn{PREEMPT} runs exactly
+one of them, and \kn{WANT\_SUSPEND} picks which.
+\end{keypoint}
+
+\section{Both failure modes, measured}
+
+Both were found by stress test, and \textbf{neither was visible any other way}.
+\kn{condor\_config\_val} printed a correct expression throughout,
+\kn{condor\_status} showed healthy machines, and no log recorded anything at all.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.20\textwidth} L{0.24\textwidth} Y}
+\toprule
+\textbf{Setting} & \textbf{Consequence} & \textbf{Measured} \\
+\midrule
+\kn{False} (the default) & \kn{SUSPEND} never fires & Load driven to \textbf{15.72} against a 12.0 threshold and held 90\,s: silent \\
+Constant \kn{True} & \kn{PREEMPT} never fires & Memory held \textbf{1.5\,GB below} the eviction floor for 60\,s: silent \\
+\bottomrule
+\end{tabularx}
+\caption{The two ways to get this wrong. The second was introduced while fixing the first.}
+\end{table}
+
+The default is \kn{False}, which means a policy that defines \kn{SUSPEND} and
+never touches \kn{WANT\_SUSPEND} has a suspension rule that can never execute.
+
+\section{The resolution}
+
+It must be an \textbf{expression}, inverting on the pressure that suspension
+cannot relieve:
+
+\begin{lstlisting}
+EVICT_PRESSURE = memory below floor
+              OR memory PSI stalling
+              OR disk below floor
+
+WANT_SUSPEND = !(EVICT_PRESSURE)     # CPU contention -> suspend
+PREEMPT      =   EVICT_PRESSURE      # memory/disk    -> evict
+SUSPEND      = NonCondorLoad > TotalCpus * 0.75
+\end{lstlisting}
+
+Read as a sentence: \emph{if the pressure is something freezing the job would
+relieve, freeze it; otherwise kill it.} CPU contention is relieved by
+\kn{SIGSTOP}. Memory pressure is not, because a stopped process keeps its RSS.
+
+\section{Observed behaviour}
+
+Suspension and resumption, with the hysteresis gap doing its job:
+
+\begin{lstlisting}[style=term]
+23:34:30  load 11.12                                Busy
+23:34:40  SUSPEND is TRUE     Busy -> Suspended         (threshold 12.0)
+23:36:45  CONTINUE is TRUE    Suspended -> Busy         (resumed at 7.95)
+\end{lstlisting}
+
+Eviction, eleven seconds after pressure began, via the full graceful path:
+
+\begin{lstlisting}[style=term]
+00:18:16  PREEMPT is TRUE        Busy -> Retiring
+00:18:16  WANT_VACATE is TRUE    Claimed/Retiring -> Preempting/Vacating
+00:18:16                         -> Owner/Idle -> Unclaimed -> Delete
+00:19:09  job re-matched, evicted again while pressure persisted
+\end{lstlisting}
+
+The re-match at \kn{00:19:09} is correct behaviour, not a loop bug: the job
+returned to the queue, the negotiator found the machine still advertising
+capacity, and the policy evicted it again because the pressure had not lifted.
+
+\section{How to test this safely}
+
+\begin{trap}
+Do not drive a machine to genuine memory pressure to test a threshold ---
+especially not one running a database. The OOM killer does not choose politely,
+and there is no equivalent of \kn{renice} for memory.
+\end{trap}
+
+\textbf{Raise the floor to meet the memory instead.} Override the eviction
+threshold to just under current availability, allocate a couple of gigabytes, and
+the real code path runs with minimal risk.
+
+Two details make the difference between a valid test and a misleading one:
+
+\textbf{Override both \kn{PREEMPT} and \kn{WANT\_SUSPEND}.} Overriding
+\kn{PREEMPT} alone leaves \kn{WANT\_SUSPEND} pointing at the real floor, where it
+stays true, so \kn{SUSPEND} is consulted instead and the test fails for entirely
+the wrong reason. This was caught before the first eviction test ran.
+
+\textbf{Generators must be self-terminating and must not fork.} Use \kn{timeout}
+to own the deadline, so nothing survives a dropped ssh session or a closed tmux
+window.
+
+\begin{trap}
+An early CPU load generator tested its own deadline by calling \kn{date +\%s}
+each iteration. The fork per iteration dominated the loop, and fourteen workers
+produced a load of about 7 --- below the threshold. It looked exactly like a
+policy failure. The instrument was broken, not the system.
+\end{trap}
