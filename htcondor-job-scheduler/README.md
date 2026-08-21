@@ -3,9 +3,14 @@
 Pooling office PCs into a batch system users treat as an extension of their own
 machine.
 
-Status: **two-machine pool running**, plus a third machine that joins and runs
-jobs but cannot return their output - it sits on a different network from the
-other two (section 11). Remote submission works from a third
+Status: **three-machine pool running across two subnets that cannot route to
+each other.** Remote submission works from a fourth machine with no login, no
+shared filesystem and no home directory on the entry node. Jobs distribute
+across all three and return their output.
+
+Workers carry **no network configuration**: each derives at startup which of the
+entry node's two addresses it can reach (section 11), so a machine that moves
+between subnets reconfigures itself. Remote submission works from a third
 machine with no login, no shared filesystem, and no home directory on the entry
 node. Jobs distribute across both machines. Both carry a contention-driven owner
 policy driven entirely by measured system state.
@@ -414,37 +419,88 @@ findable by name, because every worker's `CONDOR_HOST` points at it.
 submission at all. `DEFAULT_DOMAIN_NAME = local` qualifies them and stays
 resolvable through avahi via nsswitch (`files mdns4_minimal ... dns mdns4`).
 
-### A multi-homed entry node cannot serve two unroutable networks
+### A multi-homed entry node serving two unroutable networks
 
-Attempted: dual-home the entry node (wired + wifi) so machines on both networks
-could reach it, treating it as a star hub. It does not work, and the way it fails
-is expensive.
+The pool spans two subnets that cannot route to each other, and machines move
+between them. This **works**, using HTCondor's documented multi-homing support -
+an earlier revision of this document said it could not, which was wrong.
+
+#### Why it looks impossible at first
 
 `BIND_ALL_INTERFACES` is true and the daemons listen on `0.0.0.0:9618` - they
-**accept** on every address. But a daemon advertises **one primary address** in
-its sinful string, and peers are told to dial that. So:
+**accept** on every address. But a daemon advertises **one primary address**, and
+peers are told to dial that. The result is a failure that mostly looks like
+success:
 
 | direction | initiator | result |
 |---|---|---|
 | worker -> collector (register, update) | worker dials `CONDOR_HOST` | works - outbound |
-| shadow -> startd (claim) | entry node dials the worker's address | works |
+| shadow -> startd (claim) | entry node dials the worker | works |
 | **starter -> shadow (file transfer)** | **worker dials the shadow's advertised address** | **fails** |
 
 Three of four directions work. The machine registers, jobs match, jobs **run to
-completion** - and then the return channel fails and the work is discarded:
+completion** - and then the return channel fails, the work is discarded, the job
+is re-queued, and it loops, burning slots while `condor_status` shows a healthy
+machine.
+
+Two obvious fixes do not work, both tested:
+
+- `NETWORK_INTERFACE` with two addresses: accepted as a value, but `addrs=`
+  still carries one IPv4. The manual is explicit - *"HTCondor daemons can only
+  advertise two IP addresses... One is the public IP address and the other is
+  the private IP address."*
+- `TCP_FORWARDING_HOST` set to a hostname: resolved **locally at startup** and
+  baked in as a single IP - and it silently flipped the primary to the wifi
+  address, which would have broken the wired machines instead.
+
+Sinful strings are address-based by design: resolution happens once, at the
+advertiser, and every peer receives the same string.
+
+#### What does work
+
+`PRIVATE_NETWORK_NAME` / `PRIVATE_NETWORK_INTERFACE`. The entry node publishes
+**both** addresses; a peer uses the private one if it declares a matching
+`PRIVATE_NETWORK_NAME`, and the primary otherwise. Two addresses is exactly
+enough for two networks.
 
 ```
-ERROR "Error from slot1_1@...: Could not initiate file transfer"
+entry node:  PRIVATE_NETWORK_NAME      = $(FULL_HOSTNAME)
+             PRIVATE_NETWORK_INTERFACE = <the interface on the private segment>
+
+advertises:  <PRIMARY:9618?PrivAddr=<PRIVATE:9618>
+                          &PrivNet=<entry node hostname>&...>
 ```
 
-The job is re-queued and loops forever, burning slots, while `condor_status`
-shows a healthy machine. Pinning `NETWORK_INTERFACE` does not fix it - it only
-moves the breakage to the other network. There is no single address both
-networks can reach, and Condor will not advertise two.
+The catch: the choice is made by the **reader**, so a hardcoded value on a
+worker is silently wrong the moment that machine moves.
 
-**Put every pool member on one network**, by cable or by overlay VPN. A machine
-with unplugged ethernet ports on a wifi-only config is one cable away from
-working; that is cheaper than any of this.
+#### Deriving it instead of configuring it
+
+`PRIVATE_NETWORK_NAME` defaults to the machine's own `FULL_HOSTNAME`, which can
+never match another machine's - so the default already means *"use the primary
+address"*. Only machines on the private segment need to do anything, and they
+can work it out themselves:
+
+```
+1. resolve CONDOR_HOST      -> avahi answers per-interface, giving the
+                               address reachable from HERE
+2. ask the collector        -> its PrivAddr and its PrivNet name
+3. reached it on PrivAddr?  -> adopt that PrivNet
+   otherwise               -> write nothing; the default is already correct
+```
+
+The worker holds **no network fact, no address and no name** - it learns
+everything from the entry node at startup. The same file goes on every machine,
+and two workers on opposite segments reach opposite conclusions from identical
+inputs. Wire it as an `ExecStartPre` on `condor.service` plus a NetworkManager
+dispatcher hook that restarts condor **only when the derivation changes**, so a
+lease renewal does not evict running jobs.
+
+Fail safe: any error - name unresolvable, collector unreachable, ad unparseable
+- must write **nothing**, never a stale name. Stale is the failure this exists
+to prevent. Note the derivation needs root, since querying the collector uses
+the daemon token in `/etc/condor/tokens.d/`; running it as `ExecStartPre`
+satisfies that.
 
 ### Why a role alias failed, and was retired
 
@@ -462,15 +518,14 @@ changes. Two pieces are needed together:
   "Can't find address of schedd". `SCHEDD_NAME` cannot substitute: with no `@`
   it becomes `$(SCHEDD_NAME)@$(FULL_HOSTNAME)`.
 
-**This was retired.** `avahi-publish -a` binds a name to ONE literal address
+**This was retired**, and it was the alias that broke multi-homing: pointing
+`NETWORK_HOSTNAME` at it forced the daemons to bind and advertise that single
+address. `avahi-publish -a` binds a name to ONE literal address
 with no interface awareness, so the alias answered every querier with the same
 address regardless of which network they were on. A machine's **own** hostname
 behaves differently: avahi answers per-interface, giving each querier the address
 it can actually reach. Verified from both sides - the same real hostname resolved
 to the wired address from the wired LAN and the wifi address from wifi.
-
-Worse, `NETWORK_HOSTNAME` pointing at the alias forced the daemons to bind and
-advertise that single address, which is what broke file transfer above.
 
 Use the entry node's real hostname for `CONDOR_HOST`. The cost is losing role
 indirection: relocating the entry node means updating `CONDOR_HOST` on each
@@ -624,7 +679,8 @@ interactive trust prompt. Check pool membership instead.
 
 | item | status |
 |---|---|
-| **A third machine on a separate network cannot complete jobs.** It registers, matches and runs work, then fails to return output because the entry node advertises a single address the machine cannot route to | **Blocked.** Fix is one network - a cable, or the overlay VPN. Do not attempt to serve two unroutable networks from one multi-homed entry node |
+| Two unroutable subnets in one pool | **Solved** via `PRIVATE_NETWORK_*` with a derived, not configured, name (section 11) |
+| The entry node's second interface and its address configuration are now **load-bearing**, not experimental | If that interface drops, every worker on that segment loses its return path. Worth monitoring |
 | The role alias for the entry node has been **retired** | Resolved. `avahi-publish` is not interface-aware; a machine's own hostname is. `CONDOR_HOST` now names the machine, so relocating the entry node means editing every worker |
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
