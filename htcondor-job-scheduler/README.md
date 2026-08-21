@@ -74,26 +74,112 @@ cache is evicted does not crash, it gets slow.
 Edge SBC restrictions: SD-card storage (write endurance), runs a wireless AP and
 other listening services. Small slot, no I/O-heavy work.
 
-## 6. Owner policy — mandatory on every worker
+## 6. Owner policy — contention-driven, mandatory on every worker
+
+The trigger is local **work** appearing, not a human being detected. When the
+machine's own workload grows, Condor jobs suspend; if contention persists they
+are evicted.
 
 ```
-START    = KeyboardIdle > 120 && (LoadAvg - CondorLoadAvg) < 0.6
-SUSPEND  = KeyboardIdle < 30
-CONTINUE = KeyboardIdle > 120
-PREEMPT  = ((Activity == "Suspended") && (ActivityTimer > 300))
-RANK     = (RemoteOwner =?= "<machine owner>")
+NonCondorLoad = (TotalLoadAvg - TotalCondorLoadAvg)
+
+START    = (OwnerSessionActive =!= True) && (NonCondorLoad < 1.0)
+SUSPEND  = (NonCondorLoad > 2.0)
+CONTINUE = (NonCondorLoad < 1.0)
+MEM_MARGIN_FRACTION = 0.15
+PREEMPT  = (HostMemAvailMB > 0) && (HostMemAvailMB < (HostMemTotalMB * MEM_MARGIN_FRACTION))
+
+MaxJobRetirementTime = 0
+MachineMaxVacateTime = 30
+KILL     = FALSE
 ```
+
+**CPU contention suspends. Memory pressure evicts. Time does nothing.**
+A suspended job costs the owner no CPU at all - `SIGSTOP` means it is not
+scheduled - so discarding its work merely because time passed is pure waste.
+Memory is the one resource suspension cannot return: `SIGSTOP` freezes a
+process but keeps its RSS. So memory pressure is the only justification for
+killing, and when it fires reclaim is immediate (`MaxJobRetirementTime = 0`,
+then 30s to exit cleanly before SIGKILL).
+
+Thresholds are **busy cores measured against the reservation**, not arbitrary
+numbers. On a 4-core box donating 2, SUSPEND at `> 2.0` means "the owner now
+needs more than the 2 cores reserved for them". CONTINUE at `< 1.0` is
+deliberate hysteresis - equal thresholds make jobs flap.
 
 | setting | value | rationale |
 |---|---|---|
-| `CGROUP_MEMORY_LIMIT_POLICY` | `hard` | `request_memory` is otherwise accounting only; a runaway job swaps the owner's desktop to death |
-| `JOB_RENICE_INCREMENT` | 10 | foreign jobs always yield CPU to the person at the keyboard |
-| `MaxJobRetirementTime` | tune | too short wastes work, too long makes owners wait for their own PC |
-| `condor-kbdd` | required | without it console-activity detection is blind and the whole policy is inert |
+| `CGROUP_MEMORY_LIMIT_POLICY` | `none` | **no per-job cap** - see below |
+| `JOB_RENICE_INCREMENT` | 10 | covers the lag: load average is a decaying 1-minute mean and reacts in tens of seconds. Renice makes jobs yield the CPU instantly |
+| `MaxJobRetirementTime` | 300 | too short wastes work, too long makes owners wait |
+| `condor-kbdd` | installed | needed for console attributes, but see the warning below |
 
-`RANK` gives each owner first call on their own machine, including preempting a
-stranger's job. This is the adoption lever — "I contribute and still get my PC
-first".
+### No per-job memory ceiling
+
+`hard` enforces `request_memory` as an absolute per-job limit, so a job asking
+256 MB is OOM-killed at 256 MB with 14 GB free. On 4-16 GB machines that forces
+everyone to over-request - wasting the RAM the fleet does not have - and turns
+honest requests into spurious failures. `request_memory` stays a **matchmaking
+figure only**; memory is protected system-wide by eviction instead.
+
+The margin is a **fraction of installed RAM**, not an absolute floor: 2 GB is
+12% of a 16 GB desktop and half of a 4 GB SBC, and the fleet spans both.
+
+`HostMemAvailMB` / `HostMemTotalMB` come from the STARTD_CRON job - Condor
+publishes no free-memory attribute. `MemAvailable` is used rather than
+`MemFree`, which ignores reclaimable page cache and would report false pressure
+on any long-running machine.
+
+Two traps in that expression:
+
+- **Do not gate eviction on `Activity == "Suspended"`.** SUSPEND fires on CPU
+  load, so a job quietly eating RAM without loading the CPU would never suspend
+  and therefore never be preempted - unenforceable in exactly the case that
+  matters.
+- **Guard with `HostMemAvailMB > 0`.** Before the cron's first run the attribute
+  is 0 or UNDEFINED, and a bare comparison reads as pressure - evicting every
+  job the moment the startd starts.
+
+### Do not write this policy against ConsoleIdle or KeyboardIdle
+
+On a **partitionable** slot, the machine-level attributes behave differently on
+the dynamic slots where jobs actually run:
+
+| attribute | partitionable parent | dynamic slot |
+|---|---|---|
+| `ConsoleIdle` | real value | **absent (UNDEFINED)** |
+| `KeyboardIdle` | real value | `-1` sentinel |
+| `LoadAvg` | real value | `-1.0` sentinel |
+| `TotalLoadAvg`, `TotalCondorLoadAvg` | real | **real** |
+| STARTD_CRON attributes | present | **present** |
+
+One UNDEFINED term makes an entire `&&` chain non-TRUE, so a policy written
+against `ConsoleIdle` leaves every dynamic slot in state `Owner`, refusing every
+claim - while the parent still reports `Unclaimed/Idle` with `Start = true`.
+
+**This failure is invisible from `condor_status`.** The pool looks healthy, jobs
+sit Idle forever, and `condor_q -better-analyze` reports "1 are able to run your
+job". Only `StartLog` shows `Request to claim resource refused` /
+`Claiming protocol failed`. Use the machine-wide `Total*` attributes.
+
+`KeyboardIdle` is separately wrong on any administered machine: it counts
+activity on **any tty, including ssh ptys**, so an admin session makes the box
+look permanently busy. Measured with nobody present: `KeyboardIdle = 2` while
+`ConsoleIdle = 359657`.
+
+### Detecting remote users
+
+`condor_kbdd` only sees the local X console. On machines used over RDP or VNC it
+is blind to the actual user. A `STARTD_CRON` job publishing an
+`OwnerSessionActive` attribute - derived from established connections on the
+remote-desktop port plus active non-greeter graphical sessions - covers that,
+and unlike the console attributes it *does* propagate to dynamic slots.
+
+### Adoption
+
+`RANK = (RemoteOwner =?= "<owner>")` gives each owner first call on their own
+machine, including preempting a stranger's job. This is the adoption lever -
+"I contribute and still get my PC first".
 
 Failure mode to avoid: nobody files a bug when Condor makes their PC stutter.
 They run `systemctl disable condor` and the pool shrinks silently.
@@ -267,7 +353,9 @@ design exists to satisfy; proving it early on two machines de-risks the rest.
 
 | item | status |
 |---|---|
-| **cgroup enforcement does not work** on the installed build - jobs land in `/system.slice/condor.service` with `memory.max=max`, `cpu.max=max`, full cpuset | **Blocks phase 1.** No worker should join until `request_memory` actually binds. Options: point `BASE_CGROUP` at the delegated subtree, newer HTCondor, or systemd-level caps on the service |
+| cgroup per-job enforcement does not work on the installed build | **Resolved by decision, not by fix.** Per-job caps are not wanted on machines this size; memory is protected system-wide by eviction. `CGROUP_MEMORY_LIMIT_POLICY = none` makes the config honest about it |
+| Memory eviction is only as fresh as the STARTD_CRON period (20s) | **Accepted.** A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim |
+| A job can stay suspended indefinitely on a persistently busy machine, holding its claim and RSS | **Accepted deliberately.** It resumes when load drops. If it becomes a problem the fix is a cap on suspended time, not a shorter PREEMPT |
 | `JOB_RENICE_INCREMENT` | **verified working** (job niceness 10) |
 | `nproc` inside a job reports `request_cpus` | comes from `OMP_NUM_THREADS`, **not** enforcement - cpuset still shows all cores |
 | Entry node is an actively-used desktop owned by another user | **Risk.** Single point of failure; must be always-on. Give it a DHCP reservation |
