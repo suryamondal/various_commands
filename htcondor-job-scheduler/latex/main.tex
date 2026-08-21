@@ -32,11 +32,13 @@
 \begin{minipage}{0.86\textwidth}
 \centering
 \begin{keypoint}
-\textbf{Status.} A three-machine pool is running. Remote submission works from a
-fourth machine with no login, no shared filesystem and no home directory on the
-entry node. All three policy behaviours --- suspension, eviction and admission
-closure --- have been observed firing under real load, not merely configured.
-The entry node survives a reboot with its queue, configuration and policy intact.
+\textbf{Status.} A four-machine pool is running. Remote submission works with no
+login, no shared filesystem and no home directory on the entry node. All three
+policy behaviours --- suspension, eviction and admission closure --- have been
+observed firing under real load, not merely configured. The entry node survives
+a reboot with its queue, configuration and policy intact. The fourth machine is
+a user PC that both submits and executes, which is the symmetric co-operative
+the design exists to produce.
 \end{keypoint}
 \end{minipage}
 

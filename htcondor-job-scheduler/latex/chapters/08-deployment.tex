@@ -36,10 +36,42 @@ Verification & \kn{condor\_config\_val -v <KNOB>} --- never trust the file, \fil
 \end{enumerate}
 
 Step 4 is the one that is easy to miss, for the reason given in
-Chapter~\ref{ch:security}. Step 5's second clause is not redundant with its
-first: appearing in \kn{condor\_status} and accepting work are independent
-properties, and Chapter~\ref{ch:failure} catalogues several ways to have the
-first without the second.
+Chapter~\ref{ch:security}. Issue it on the entry node with the \emph{daemon}
+identity:
+
+\begin{lstlisting}[style=term]
+sudo condor_token_create -identity condor@<pool>.internal
+\end{lstlisting}
+
+Move it straight from entry node to worker and destroy every intermediate copy.
+It is a bearer credential with no machine binding: anything that reads the file
+can act as a pool daemon.
+
+Step 5's second clause is not redundant with its first: appearing in
+\kn{condor\_status} and accepting work are independent properties, and
+Chapter~\ref{ch:failure} catalogues several ways to have the first without the
+second.
+
+\section{Adding a user PC}
+
+A user PC is a worker that also submits. Same procedure, from the same template,
+plus three things:
+
+\begin{itemize}
+  \item \textbf{Set \kn{RANK}} to that person's identity. This is the whole
+        adoption argument, and it is the only thing they get for joining that a
+        donated-only worker does not.
+  \item \textbf{Pin \kn{NETWORK\_INTERFACE}} if the machine carries a VPN or
+        any interface the entry node cannot reach (\S\ref{sec:vpn}).
+  \item \textbf{No schedd.} Submission is remote; the local install exists to
+        donate capacity.
+\end{itemize}
+
+The pool and naming block is identical to a plain worker's, so this file
+\emph{replaces} any earlier submit-client configuration rather than sitting
+beside it. Leaving both in place means two files defining
+\kn{CONDOR\_HOST}, resolved by \file{config.d} precedence rather than by
+intent.
 
 \section{What survives a reboot}
 

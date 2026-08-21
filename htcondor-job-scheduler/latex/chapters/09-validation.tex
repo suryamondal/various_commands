@@ -19,6 +19,7 @@ Suspension and resumption & Verified & \S\ref{sec:obs-suspend} \\
 Memory eviction & Verified & \S\ref{sec:obs-evict} \\
 Admission closure under saturation & Verified & \S\ref{sec:closure} \\
 Reboot survival & Verified & Queue, config and policy intact \\
+User PC as worker + submit client & Verified & \S\ref{sec:userpc} \\
 Graceful degradation & Verified & Six-job cluster ran on two cores with the worker absent \\
 \kn{JOB\_RENICE\_INCREMENT} & Verified & Job niceness observed at 10 \\
 \midrule
@@ -96,6 +97,41 @@ afterwards.
 This is self-correcting, and it explains a \kn{START=false} that appears just as
 a machine goes quiet --- which otherwise looks like a policy bug at exactly the
 moment you would least expect one.
+
+\section{The user PC, end to end}
+\label{sec:userpc}
+
+The acceptance test for the fourth machine, and the first exercise of the
+symmetric case: eight jobs submitted \emph{from} the machine that also executes
+them.
+
+\begin{lstlisting}[style=term]
+25 0  slot1_1@entry-node        25 4  slot1_2@entry-node
+25 1  slot1_1@in-use-desktop    25 5  slot1_2@flagship
+25 2  slot1_1@user-pc           25 6  slot1_2@user-pc
+25 3  slot1_1@flagship          25 7  slot1_2@in-use-desktop
+\end{lstlisting}
+
+Two per machine across all four, all completed, all output returned, zero bytes
+of stderr. The job that ran on the user PC reported:
+
+\begin{lstlisting}[style=term]
+ran on : user-pc
+as     : nobody       %% no worker accounts, scratch sandbox
+nice   : 10           %% JOB_RENICE_INCREMENT applied
+cpus   : 1            %% OMP_NUM_THREADS, not enforcement
+\end{lstlisting}
+
+Three separate claims are settled by that output. Jobs run unprivileged; the
+renice that makes donation safe is actually applied; and \kn{nproc} reports the
+request rather than any enforced limit, exactly as \S\ref{sec:instruments}
+warns.
+
+The retrieval matters as much as the placement. Output transfer is the direction
+that fails when a machine advertises an address its peer cannot reach
+(\S\ref{sec:vpn}), so eight sandboxes returning cleanly is the check that the
+interface pin was correct --- not the fact that the machine appeared in
+\kn{condor\_status}.
 
 \section{Test methodology}
 

@@ -87,12 +87,21 @@ A three-machine pool spanning two subnets with no route between them:
         only high-core machine.
   \item An \textbf{in-use desktop} --- a four-core mini-PC belonging to someone
         who uses it all day, on the other subnet.
-  \item A \textbf{submit-only client} --- a fourth machine with no account on
-        the entry node, no shared filesystem, and Condor's own daemons
-        deliberately disabled.
+  \item A \textbf{user PC} --- a four-core mini-PC on both subnets that
+        \emph{submits and executes}. It is the first machine of the class the
+        whole design targets, and the first whose owner has a Condor identity,
+        so \kn{RANK} is finally in use.
 \end{itemize}
 
-Jobs submitted from the client distribute across all three machines and return
+Jobs submitted from the user PC distribute across all four machines and return
 their output. Workers carry no network configuration at all: each derives at
 startup which of the entry node's two addresses it can reach, so a machine that
 moves between subnets reconfigures itself.
+
+\begin{keypoint}
+The user PC is the point of the exercise, not an extra worker. It runs the
+submit client and a startd and \textbf{no schedd}: its owner submits against
+the entry node's queue from their own desktop, and the same desktop executes
+other people's jobs when they are not using it. That is the symmetric
+co-operative in Table~1.1, and everything before it was scaffolding.
+\end{keypoint}

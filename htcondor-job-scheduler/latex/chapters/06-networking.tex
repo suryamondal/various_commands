@@ -187,6 +187,78 @@ So \kn{CONDOR\_HOST} names the machine. The cost is losing role indirection:
 relocating the entry node means updating \kn{CONDOR\_HOST} on every worker.
 Correctness across networks beats the abstraction.
 
+\begin{trap}
+\textbf{Retiring a name means finding every consumer, not every worker.} When
+the alias service was removed, the entry node and both workers were checked and
+all three already named the real host. The submit-only client was not checked,
+and it still named the alias --- so remote submission from that machine broke
+and stayed broken until it was next touched.
+\end{trap}
+
+That one failed loudly when finally exercised (\kn{Error: unknown host}), which
+is the good case. A \emph{worker} left in that state would have registered
+against nothing and looked healthy, which is the shape of every defect in
+Chapter~\ref{ch:failure}. Grep every host for the name being retired, including
+hosts that run no daemons.
+
+\section{A VPN interface on a pool member is a hazard}
+\label{sec:vpn}
+
+Condor ranks candidate addresses by publicness and advertises the most public as
+primary. Its private set is RFC1918 --- \kn{10/8}, \kn{172.16/12},
+\kn{192.168/16} --- so \textbf{tailscale's \kn{100.64/10} does not count as
+private} and is a candidate to become the advertised address.
+
+Measured on the first user PC, which has three interfaces:
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.22\textwidth} L{0.26\textwidth} Y}
+\toprule
+\textbf{Interface} & \textbf{Address} & \textbf{In the pool?} \\
+\midrule
+wired & \kn{172.16.0.x/23} & yes \\
+wifi & \kn{192.168.0.x/24} & yes \\
+\kn{tailscale0} & \kn{100.x.x.x/32} & \textbf{no} \\
+\bottomrule
+\end{tabularx}
+\caption{A pool member carrying an interface the pool cannot use.}
+\end{table}
+
+The entry node has no tailscale interface and cannot reach that address at all
+--- verified by connecting to each of the user PC's three addresses from it.
+Advertising the overlay address would produce the return-channel failure above:
+the worker registers, jobs match, jobs run to completion, and then output
+transfer fails and the work is discarded while \kn{condor\_status} shows a
+healthy machine.
+
+So \kn{NETWORK\_INTERFACE} is named explicitly on any machine carrying a VPN
+interface, choosing the segment the entry node's \emph{primary} address is on so
+that entry-to-worker takes the direct path. The cost is that the line is wrong
+if the machine's attachment ever changes --- accepted, because the alternative is
+trusting a ranking that demonstrably picks wrong.
+
+\subsection{The pin only constrains IPv4}
+
+Verified afterwards on the slot ad, which is the only place this is visible:
+
+\begin{lstlisting}[style=term]
+<WIRED:9618?addrs=WIRED-9618
+                 +[TAILSCALE-ULA-IPV6]-9618&...>
+\end{lstlisting}
+
+The primary is correct, but the \kn{addrs=} list still carries tailscale's
+global IPv6. The pool interfaces have only link-local \kn{fe80::} addresses,
+which Condor will not advertise, so the overlay's ULA was the only global IPv6
+available --- and it was selected independently of \kn{NETWORK\_INTERFACE}.
+
+\begin{keypoint}
+Nothing has broken: the entry node advertises IPv4 only and dials IPv4. But a
+peer preferring IPv6 from that list would dial an address the entry node cannot
+reach. \kn{ENABLE\_IPV6 = FALSE} closes it. \textbf{Check \kn{addrs=}, not
+just the primary.}
+\end{keypoint}
+
 \section{Why UID\_DOMAIN is deliberately different}
 
 \kn{UID\_DOMAIN} is a principal namespace and is never resolved as a hostname.

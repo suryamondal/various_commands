@@ -3,10 +3,14 @@
 Pooling office PCs into a batch system users treat as an extension of their own
 machine.
 
-Status: **three-machine pool running across two subnets that cannot route to
-each other.** Remote submission works from a fourth machine with no login, no
-shared filesystem and no home directory on the entry node. Jobs distribute
-across all three and return their output.
+Status: **four-machine pool running across two subnets that cannot route to
+each other.** Remote submission works with no login, no shared filesystem and
+no home directory on the entry node. Jobs distribute across all four and return
+their output.
+
+The fourth machine is the first of the **user-PC class** - worker *and* submit
+client, the symmetric co-op the design exists for. It is also the first machine
+whose owner has a Condor identity, so `RANK` is finally in use.
 
 Workers carry **no network configuration**: each derives at startup which of the
 entry node's two addresses it can reach (section 11), so a machine that moves
@@ -39,7 +43,7 @@ untracked — this document names machine *classes* only.
 |---|---|
 | Entry node | `master`, `collector`, `negotiator`, `schedd`, `startd` (limited), `shared_port` |
 | Worker | `master`, `startd`, `kbdd` |
-| User PC | worker daemons + submit client (`condor_submit -remote -spool`); **no schedd** |
+| User PC | worker daemons + submit client (`condor_submit -remote -spool`); **no schedd**. Template: `scripts/50-user-pc.config` |
 
 One schedd, on the entry node. User PCs do not queue locally — a schedd on a
 laptop dies with the lid.
@@ -62,8 +66,8 @@ Requirements: `SPOOL` on NVMe; half its cores donated to compute, the rest reser
 
 | class | arch | cores | RAM | disk free | count |
 |---|---|---|---|---|---|
-| Mini-PC (entry + worker) | x86_64 | 4 | 16 G | 30–70 G | 8+, growing |
-| Flagship worker | x86_64 | 16 | 31 G | ~270 G | 1 |
+| Mini-PC (entry + worker) | x86_64 | 4 | 16 G | 30–70 G | 8+, growing; **3 in pool** |
+| Flagship worker | x86_64 | 16 | 31 G | ~270 G | 1, **in pool** |
 | Laptop | x86_64 | 12 | 8 G | ~250 G | 1+ |
 | Edge SBC | aarch64 | 4 | 4 G | ~36 G (SD) | 1+ |
 | Jetson | aarch64 | TBD | TBD | TBD | future, GPU |
@@ -637,6 +641,55 @@ Use the entry node's real hostname for `CONDOR_HOST`. The cost is losing role
 indirection: relocating the entry node means updating `CONDOR_HOST` on each
 worker. Correctness across networks beats the abstraction.
 
+**Retiring a name means finding every consumer, not every worker.** When the
+alias service was removed, the entry node and both workers were checked and all
+three already pointed at the real hostname. The submit-only client was not
+checked, and it still named the alias - so remote submission from it broke
+silently and stayed broken until that machine was next touched. It failed
+loudly when finally exercised (`Error: unknown host`), which is the good case;
+a *worker* in that state would have looked healthy instead. Grep every host for
+the name being retired, including hosts that run no daemons.
+
+### A VPN interface on a pool member is a hazard
+
+Condor ranks candidate addresses by publicness and advertises the most public
+one as primary. Its private-address set is RFC1918 - `10/8`, `172.16/12`,
+`192.168/16` - so **tailscale's `100.64/10` does not count as private** and is a
+candidate to become the advertised address.
+
+Measured on the first user PC, which has three interfaces:
+
+| interface | address | in the pool? |
+|---|---|---|
+| wired | `172.16.0.x/23` | yes |
+| wifi | `192.168.0.x/24` | yes |
+| `tailscale0` | `100.x.x.x/32` | **no** |
+
+The entry node has no tailscale interface and cannot reach that address at all.
+Advertising it would give the return-channel failure above: the worker
+registers, jobs match, jobs run to completion, and then output transfer fails
+and the work is discarded while `condor_status` shows a healthy machine.
+
+So `NETWORK_INTERFACE` is named explicitly on any machine carrying a VPN
+interface. Pick the segment the entry node's **primary** address is on, so
+entry to worker takes the direct path. The cost is that the line is wrong if
+the machine's attachment ever changes - accepted, because the alternative is
+trusting a ranking that demonstrably picks wrong.
+
+**The pin only constrains IPv4.** Verified afterwards on the slot ad:
+
+```
+<WIRED:9618?addrs=WIRED-9618+[TAILSCALE-ULA-IPV6]-9618&...>
+```
+
+The primary is correct, but the `addrs=` list still carries tailscale's global
+IPv6. The pool interfaces have only link-local `fe80::` addresses, which Condor
+will not advertise, so the overlay's ULA was the only global IPv6 available and
+it was selected independently of `NETWORK_INTERFACE`. Nothing has broken - the
+entry node advertises IPv4 only and dials IPv4 - but a peer preferring IPv6
+from that list would dial an address the entry node cannot reach.
+`ENABLE_IPV6 = FALSE` closes it. **Check `addrs=`, not just the primary.**
+
 ### Why UID_DOMAIN is deliberately different
 
 `UID_DOMAIN` is a principal namespace, never resolved as a hostname. Keeping it
@@ -756,6 +809,7 @@ policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
 | — | Role-based mDNS naming; no IPs or hostnames in config | **done** |
 | — | Contention-driven owner policy on the entry node | **done** |
 | 1/2 | Add a second worker; daemon token; jobs distribute | **done** |
+| — | First user PC: worker + submit client, symmetric co-op proven | **done** |
 | 4 | JupyterHub + batchspawner CondorSpawner | not started |
 | 5 | ARM workers; GPU discovery | not started |
 | 6 | Overlay VPN for off-LAN machines | deferred by decision |
@@ -775,7 +829,29 @@ design exists to satisfy; proving it early de-risked the rest.
 
 Step 4 is the one that is easy to miss. A user token does not satisfy
 `ALLOW_DAEMON`; without a daemon credential the worker starts cleanly, fails to
-register, and simply never appears - no error surfaces at the client.
+register, and simply never appears - no error surfaces at the client. Issue it
+on the entry node with the daemon identity, not a user one:
+
+```
+sudo condor_token_create -identity condor@<pool>.internal
+```
+
+Move it straight from entry node to worker, install `600 root`, and destroy
+every intermediate copy - it is a bearer credential with no machine binding.
+
+### Adding a user PC
+
+Same as a worker, from `scripts/50-user-pc.config`, plus:
+
+- **Set `RANK`** to that person's identity. This is the whole adoption
+  argument, and it is the only thing they get for joining that a donated-only
+  worker does not.
+- **Pin `NETWORK_INTERFACE`** if the machine has a VPN or any interface the
+  entry node cannot reach (section 11).
+- **No schedd.** Submission is remote; the local install is there to donate
+  capacity.
+- The pool/naming block is the same, so this file *replaces* any earlier
+  submit-client config rather than sitting beside it.
 
 Do not test daemon auth with `condor_ping ... DAEMON` as an unprivileged user:
 it cannot read the root-owned token, falls back to SSL, and blocks on an
@@ -787,7 +863,9 @@ interactive trust prompt. Check pool membership instead.
 |---|---|
 | Two unroutable subnets in one pool | **Solved** via `PRIVATE_NETWORK_*` with a derived, not configured, name (section 11) |
 | The entry node's second interface and its address configuration are now **load-bearing**, not experimental | If that interface drops, every worker on that segment loses its return path. Worth monitoring |
-| The role alias for the entry node has been **retired** | Resolved. `avahi-publish` is not interface-aware; a machine's own hostname is. `CONDOR_HOST` now names the machine, so relocating the entry node means editing every worker |
+| The role alias for the entry node has been **retired** | Resolved. `avahi-publish` is not interface-aware; a machine's own hostname is. `CONDOR_HOST` now names the machine, so relocating the entry node means editing every worker. Removing it missed the submit-only client, which broke remote submission from that machine until it was next touched - see section 11 |
+| **Tailscale's IPv6 is still in the startd's `addrs=` list** on the user PC, despite `NETWORK_INTERFACE` being pinned | **Open, not currently biting.** The pin constrains IPv4 only; the pool interfaces have no global IPv6, so the overlay ULA was the only candidate. The entry node advertises and dials IPv4, so nothing has failed. `ENABLE_IPV6 = FALSE` closes it |
+| Workers have no `condor-wait-for-name` guard | **Open.** Only the entry node blocks on `CONDOR_HOST` resolving. A worker booting before avahi is ready derives the wrong network and idles until the NetworkManager hook restarts condor. Self-correcting, but the window is real |
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
@@ -800,7 +878,8 @@ interactive trust prompt. Check pool membership instead.
 | `JOB_RENICE_INCREMENT` | **verified working** (job niceness 10) |
 | `nproc` inside a job reports `request_cpus` | comes from `OMP_NUM_THREADS`, **not** enforcement - cpuset still shows all cores |
 | Entry node is an actively-used desktop owned by another user | **Risk.** Single point of failure; must be always-on. Give it a DHCP reservation |
-| Remote submit without local Unix accounts | **Still unverified** - the test user already had an account on the entry node |
+| Remote submit without local Unix accounts | **Still unverified** - the test user has an account on the entry node. Every submitter so far is that same user |
+| `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
 | Jetson GPU discovery | **Unverified** |
 | Shared storage for Jupyter homes | **Required, unprovisioned** |

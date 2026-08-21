@@ -14,6 +14,7 @@
 --- & Contention-driven owner policy & \textbf{done} \\
 1/2 & Second and third workers; daemon tokens; jobs distribute & \textbf{done} \\
 --- & Multi-homing across two unroutable subnets & \textbf{done} \\
+--- & First user PC: worker \emph{and} submit client & \textbf{done} \\
 4 & JupyterHub with \kn{batchspawner} CondorSpawner & not started \\
 5 & ARM workers; GPU discovery & not started \\
 6 & Overlay VPN for off-LAN machines & deferred by decision \\
@@ -113,11 +114,13 @@ Entry node SPOOL shares an 86\%-full volume with the OS, EXECUTE and \file{job\_
 The entry node's second interface is now load-bearing & If that interface drops, every worker on that segment loses its return path. Worth monitoring \\
 \kn{request\_disk} may be advisory rather than enforced & \textbf{Unverified.} If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection \\
 Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Single point of failure; must be always-on. Give it a DHCP reservation \\
-Remote submit with no local Unix account & \textbf{Unverified} --- the test user already had an account on the entry node \\
+Remote submit with no local Unix account & \textbf{Unverified} --- the test user has an account on the entry node, and every submitter so far is that same user \\
 Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
 Jetson GPU discovery & \textbf{Unverified} \\
 Shared storage for Jupyter homes & \textbf{Required, unprovisioned} \\
 \kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
+Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4 --- but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
+\kn{RANK} as the adoption lever & \textbf{In use}, untested under contention --- no second identity has yet competed for that machine \\
 Workers lack the name-resolution guard & The entry node has an \kn{ExecStartPre} that waits for \kn{CONDOR\_HOST} to resolve; workers do not. A worker booting before avahi is ready derives the wrong network and idles until the NetworkManager hook restarts Condor \\
 Off-LAN machines & mDNS is link-local. Deferred by decision \\
 \bottomrule
@@ -132,10 +135,12 @@ Off-LAN machines & mDNS is link-local. Deferred by decision \\
         \kn{EVICT\_PRESSURE} never observed firing, and Chapter~\ref{ch:failure}
         is eleven arguments against assuming an unobserved branch works. Fill a
         scratch directory on the flagship worker until the floor is crossed.
+        \emph{Deferred by decision, not forgotten.}
   \item \textbf{Give workers the name-resolution guard.} The self-correction path
         exists, but the window is real and lands hardest on the machine most
         likely to move.
   \item \textbf{Decide the isolation model.} It is cheap now and expensive later,
         and it gates how far the pool can grow beyond people who already trust
-        each other.
+        each other --- which, now that the pool runs on colleagues' own desktops
+        rather than spare hardware, is no longer a hypothetical question.
 \end{enumerate}
