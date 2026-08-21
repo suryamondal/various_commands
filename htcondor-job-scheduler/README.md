@@ -8,6 +8,9 @@ machine with no login, no shared filesystem, and no home directory on the entry
 node. Jobs distribute across both machines. Both carry a contention-driven owner
 policy driven entirely by measured system state.
 
+Reboot-tested: the entry node survives a restart with its queue, config and
+policy intact (section 13a).
+
 Not yet exercised **under load**: no suspend, eviction, or admission-closure has
 been observed actually happening - only verified correct while idle.
 
@@ -456,6 +459,62 @@ install, config, token, and repeated owner-policy revisions.
 | Slot changes | require `condor_restart` of the startd, not `condor_reconfig` |
 | Verification | `condor_config_val -v <KNOB>` — never trust the file, `config.d` precedence bites |
 
+## 13a. Restart and recovery
+
+Verified by rebooting the entry node.
+
+### What survives a reboot
+
+Everything, provided the services are enabled: config drop-ins, the mDNS alias
+service, `/usr/local/bin` helpers, the pool signing key, and - importantly - the
+**job queue**. Completed jobs were still in `job_queue.log` afterwards.
+
+The pool also degrades gracefully rather than failing: with the worker absent it
+ran a 6-job cluster on the entry node's 2 cores, queueing the rest.
+
+### A central-manager restart costs ~2 x UPDATE_INTERVAL of worker capacity
+
+Workers do **not** come back promptly. Observed sequence:
+
+```
+17:19:41  collector starts as a NEW process
+17:19:45  worker MASTER update  -> "SECMAN: Server rejected our session id"
+17:24:00  worker STARTD update  -> "SECMAN: Server rejected our session id"
+17:29:00  worker STARTD update  -> succeeds, re-registers
+```
+
+Each daemon holds a cached security session tied to the *old* collector process.
+It spends one full update cycle discovering the session is dead, invalidates it,
+and only re-authenticates on the **next** cycle - about 10 minutes at the default
+300s `UPDATE_INTERVAL`.
+
+It self-heals with no intervention, but **nothing in `condor_status` explains
+it** - the machine is simply missing. With many workers they all disappear
+together after any entry-node restart. The evidence lives in `CollectorLog`
+(`DC_AUTHENTICATE: attempt to open invalid session`) and the worker's own log
+(`SECMAN: Invalidating negotiated session rejected by peer`). Restarting condor
+on a worker clears its sessions and re-registers it immediately.
+
+### Startup ordering must be enforced, not assumed
+
+`CONDOR_HOST` is an mDNS name published by the alias service. At boot both
+started **in the same second** and it worked only by a hair. If condor wins that
+race, its daemons come up unable to reach their own collector and each sits out a
+full update interval - the pool looks alive and does nothing.
+
+`After=` alone is insufficient: the alias service is `Type=simple`, so systemd
+considers it started the moment it execs, before `avahi-publish` has established
+the name. Wait for the **condition** instead, via an `ExecStartPre` that blocks
+until the name resolves. Ship it as a `condor.service.d/` drop-in - editing the
+packaged unit gets silently reverted on upgrade - and have the script always exit
+0 so a slow name can never hang a boot.
+
+### Do not list a daemon whose package is not installed
+
+`KBDD` in `DAEMON_LIST` without `condor-kbdd` present makes the master log
+`Cannot execute (errno=2)` and retry every ~34 minutes forever. Workers whose
+policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
+
 ## 14. Phases
 
 | phase | scope | status |
@@ -496,6 +555,7 @@ interactive trust prompt. Check pool membership instead.
 |---|---|
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
+| A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
 | Nothing has been tested **under real load** - no suspend, eviction, or admission-closure has been observed happening | **Untested.** Verify before other people's machines join |
 | `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |
 | cgroup per-job enforcement does not work on the installed build | **Resolved by decision, not by fix.** Per-job caps are not wanted on machines this size; memory is protected system-wide by eviction. `CGROUP_MEMORY_LIMIT_POLICY = none` makes the config honest about it |
