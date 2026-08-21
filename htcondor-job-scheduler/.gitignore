@@ -5,3 +5,8 @@ condor-host-list
 logs/
 scripts/
 *~
+
+# Credentials - never track.
+wifi.txt
+*.psk
+*secret*

@@ -3,7 +3,9 @@
 Pooling office PCs into a batch system users treat as an extension of their own
 machine.
 
-Status: **two-machine pool running.** Remote submission works from a third
+Status: **two-machine pool running**, plus a third machine that joins and runs
+jobs but cannot return their output - it sits on a different network from the
+other two (section 11). Remote submission works from a third
 machine with no login, no shared filesystem, and no home directory on the entry
 node. Jobs distribute across both machines. Both carry a contention-driven owner
 policy driven entirely by measured system state.
@@ -83,7 +85,7 @@ shadows or fsync `job_queue.log` then nothing anywhere in the pool runs.
 | Memory | **90%** offered | ~35% offered | one shadow per running job, pool-wide |
 | Disk | reserved + tiers | reserved + tiers **+ transfer caps** | SPOOL is the funnel every job crosses |
 | Load scaling | `TotalCpus` | **`DetectedCpus`** | see below |
-| Load thresholds | 0.25 / 0.50 | **0.50 / 0.75** | see below |
+| Load thresholds | 0.50 / 0.75 | 0.50 / 0.75 | now the same - see below |
 
 ### Scale on DetectedCpus, not TotalCpus
 
@@ -100,6 +102,19 @@ they are **not** counted in `CondorLoadAvg`. Every file transfer the entry node
 brokers for the whole pool therefore lands in `NonCondorLoad` and looks like
 owner activity. Worker-tight thresholds would make the entry node close
 admission - and flap its own running jobs - purely for doing its job.
+
+### Fractions scale; absolute headroom does not
+
+Load thresholds are `TotalCpus * fraction`, which travels across machine sizes -
+but the *slack* it leaves does not. At 0.25, a 16-core box has 4.0 of headroom
+while a 4-core box has 1.0, and a desktop with a browser open already idles
+above that. Measured: a 4-core desktop, otherwise idle, reported non-Condor load
+1.23 against a 1.0 threshold and refused every job while `condor_status` showed
+it healthy and Unclaimed.
+
+0.50 to admit, 0.75 to suspend. Admitting while the owner uses half the machine
+is safe, because `JOB_RENICE_INCREMENT` means Condor jobs lose the CPU to them
+instantly; the gap between the two values is deliberate hysteresis.
 
 ### Disk floors: absolute on the entry node, fractional on workers
 
@@ -135,8 +150,7 @@ are evicted.
 NonCondorLoad = (TotalLoadAvg - TotalCondorLoadAvg)
 
 TIER 1 - admission (costs nothing, loses nothing)
-  START = (OwnerSessionActive =!= True)
-       && (NonCondorLoad   < TotalCpus * 0.25)      is the OWNER busy?
+  START =        && (NonCondorLoad   < TotalCpus * 0.50)      is the OWNER busy?
        && (TotalLoadAvg    < TotalCpus * 0.90)      is the MACHINE busy?
        && (HostCpuPsiAvg10 < 20.0)                  actual CPU stall, 10s window
        && (HostMemAvailMB  > TotalMem  * 0.25)
@@ -146,8 +160,8 @@ TIER 1 - admission (costs nothing, loses nothing)
   FITS_MEM = (TARGET.RequestMemory =?= UNDEFINED)
           || (TARGET.RequestMemory < (HostMemAvailMB - soft floor))
 
-  SUSPEND  = (NonCondorLoad > TotalCpus * 0.50)
-  CONTINUE = (NonCondorLoad < TotalCpus * 0.25)
+  SUSPEND  = (NonCondorLoad > TotalCpus * 0.75)
+  CONTINUE = (NonCondorLoad < TotalCpus * 0.50)
 
 TIER 2 - eviction (the only thing that discards work)
   PREEMPT = (HostMemAvailMB > 0)
@@ -239,6 +253,21 @@ Two traps in that expression:
 - **Guard with `HostMemAvailMB > 0`.** Before the cron's first run the attribute
   is 0 or UNDEFINED, and a bare comparison reads as pressure - evicting every
   job the moment the startd starts.
+
+### Presence must not gate admission
+
+`OwnerSessionActive` is published and useful for diagnostics, but it is
+deliberately **not** in `START`. People do not log out: on any desktop the
+attribute reads True essentially forever, so gating admission on it makes the
+machine advertise its cores and refuse everything, permanently - indistinguishable
+from a healthy idle machine.
+
+The policy reacts to local **work**, not to a human existing. If they start doing
+something, load and PSI catch it within seconds. Presence alone costs them
+nothing, because Condor jobs already yield the CPU instantly.
+
+This only surfaced when the first machine that is both **small** and **actually
+in use** joined. Servers and headless boxes never expose it.
 
 ### The policy is inert without the stanza that feeds it
 
@@ -385,7 +414,39 @@ findable by name, because every worker's `CONDOR_HOST` points at it.
 submission at all. `DEFAULT_DOMAIN_NAME = local` qualifies them and stays
 resolvable through avahi via nsswitch (`files mdns4_minimal ... dns mdns4`).
 
-### Why a role alias
+### A multi-homed entry node cannot serve two unroutable networks
+
+Attempted: dual-home the entry node (wired + wifi) so machines on both networks
+could reach it, treating it as a star hub. It does not work, and the way it fails
+is expensive.
+
+`BIND_ALL_INTERFACES` is true and the daemons listen on `0.0.0.0:9618` - they
+**accept** on every address. But a daemon advertises **one primary address** in
+its sinful string, and peers are told to dial that. So:
+
+| direction | initiator | result |
+|---|---|---|
+| worker -> collector (register, update) | worker dials `CONDOR_HOST` | works - outbound |
+| shadow -> startd (claim) | entry node dials the worker's address | works |
+| **starter -> shadow (file transfer)** | **worker dials the shadow's advertised address** | **fails** |
+
+Three of four directions work. The machine registers, jobs match, jobs **run to
+completion** - and then the return channel fails and the work is discarded:
+
+```
+ERROR "Error from slot1_1@...: Could not initiate file transfer"
+```
+
+The job is re-queued and loops forever, burning slots, while `condor_status`
+shows a healthy machine. Pinning `NETWORK_INTERFACE` does not fix it - it only
+moves the breakage to the other network. There is no single address both
+networks can reach, and Condor will not advertise two.
+
+**Put every pool member on one network**, by cable or by overlay VPN. A machine
+with unplugged ethernet ports on a wifi-only config is one cable away from
+working; that is cheaper than any of this.
+
+### Why a role alias failed, and was retired
 
 Config points at the *role*, not at whichever machine holds it. Moving the entry
 node = start the alias service on the new box, stop it on the old one. No worker
@@ -401,9 +462,19 @@ changes. Two pieces are needed together:
   "Can't find address of schedd". `SCHEDD_NAME` cannot substitute: with no `@`
   it becomes `$(SCHEDD_NAME)@$(FULL_HOSTNAME)`.
 
-Cost: `condor_status` shows the entry node's slot under the role name, hiding
-its hardware hostname. Jobs still see the real machine - `NETWORK_HOSTNAME`
-changes Condor's naming, not the OS hostname - so diagnostics are not lost.
+**This was retired.** `avahi-publish -a` binds a name to ONE literal address
+with no interface awareness, so the alias answered every querier with the same
+address regardless of which network they were on. A machine's **own** hostname
+behaves differently: avahi answers per-interface, giving each querier the address
+it can actually reach. Verified from both sides - the same real hostname resolved
+to the wired address from the wired LAN and the wifi address from wifi.
+
+Worse, `NETWORK_HOSTNAME` pointing at the alias forced the daemons to bind and
+advertise that single address, which is what broke file transfer above.
+
+Use the entry node's real hostname for `CONDOR_HOST`. The cost is losing role
+indirection: relocating the entry node means updating `CONDOR_HOST` on each
+worker. Correctness across networks beats the abstraction.
 
 ### Why UID_DOMAIN is deliberately different
 
@@ -553,6 +624,8 @@ interactive trust prompt. Check pool membership instead.
 
 | item | status |
 |---|---|
+| **A third machine on a separate network cannot complete jobs.** It registers, matches and runs work, then fails to return output because the entry node advertises a single address the machine cannot route to | **Blocked.** Fix is one network - a cable, or the overlay VPN. Do not attempt to serve two unroutable networks from one multi-homed entry node |
+| The role alias for the entry node has been **retired** | Resolved. `avahi-publish` is not interface-aware; a machine's own hostname is. `CONDOR_HOST` now names the machine, so relocating the entry node means editing every worker |
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
