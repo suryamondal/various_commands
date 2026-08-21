@@ -12,8 +12,9 @@ Workers carry **no network configuration**: each derives at startup which of the
 entry node's two addresses it can reach (section 11), so a machine that moves
 between subnets reconfigures itself.
 
-**Stress-tested.** Both halves of the owner policy have been observed firing
-under real load, not merely configured (section 6a). Reboot-tested: the entry
+**Stress-tested.** All three policy behaviours - suspend/resume, eviction, and
+admission closure - have been observed firing under real load, not merely
+configured (section 6a). Reboot-tested: the entry
 node survives a restart with its queue, config and policy intact (section 13a).
 
 Untested: disk-pressure eviction, which would mean deliberately filling the
@@ -408,6 +409,31 @@ Eviction, 11 seconds after pressure began, via the full graceful path:
 00:19:09  job re-matched, evicted again while pressure persisted
 ```
 
+### Admission closure, observed
+
+The clause that matters is `TotalLoadAvg < TotalCpus * 0.90`, and it is the one
+easiest to think redundant. It is not. Measured with ten jobs that each
+*requested* one core and *used* two, on a 16-core machine:
+
+```
+free=5   total=19.20   nonCondor=1.26   START=false
+```
+
+Read together: Condor's **accounting** says five cores are free and it should
+send more work; **reality** is 120% oversubscribed; the **owner** is idle, so
+`NonCondorLoad` of 1.26 is far below its 8.0 threshold and that clause is fully
+permissive. Only the saturation ceiling closes admission.
+
+Without it the machine would advertise free capacity at load 19.2 and keep
+accepting - owner protected, machine drowning. Slot accounting is request-based
+and cannot see this; only `/proc` can.
+
+An artifact worth knowing: when a burst of jobs exits, `CondorLoadAvg` drops
+immediately while `TotalLoadAvg` decays over about a minute, so their load
+briefly reattributes to non-Condor and can close admission for ~30s afterwards.
+Self-correcting, and it explains a `START=false` that appears just as a machine
+goes quiet.
+
 ### How to test this safely
 
 Do not drive a machine to genuine memory pressure to test a threshold,
@@ -766,7 +792,7 @@ interactive trust prompt. Check pool membership instead.
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
 | **Disk-pressure eviction is untested** - it would mean filling the volume that also holds the schedd's queue | **Accepted.** The expression composes correctly with the entry node's absolute floors, but has not been exercised |
-| Suspend and memory eviction under real load | **Verified** (section 6a). Admission-closure under saturation still unobserved |
+| Suspend, memory eviction, and admission closure under real load | **Verified** (section 6a) |
 | `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |
 | cgroup per-job enforcement does not work on the installed build | **Resolved by decision, not by fix.** Per-job caps are not wanted on machines this size; memory is protected system-wide by eviction. `CGROUP_MEMORY_LIMIT_POLICY = none` makes the config honest about it |
 | Memory eviction is only as fresh as the STARTD_CRON period (20s) | **Accepted.** A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim |
