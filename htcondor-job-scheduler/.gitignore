@@ -1,0 +1,7 @@
+# The host list names real machines on private networks - keep it local.
+condor-host-list
+# Command records, captured output, and staged helper scripts name real
+# machines too. Sanitise before tracking any of it.
+logs/
+scripts/
+*~
