@@ -3,9 +3,13 @@
 Pooling office PCs into a batch system users treat as an extension of their own
 machine.
 
-Status: **phase 0 complete** - single-machine pool running, remote submission
-working from a second machine with no login, no shared filesystem, and no home
-directory on the entry node.
+Status: **two-machine pool running.** Remote submission works from a third
+machine with no login, no shared filesystem, and no home directory on the entry
+node. Jobs distribute across both machines. Both carry a contention-driven owner
+policy driven entirely by measured system state.
+
+Not yet exercised **under load**: no suspend, eviction, or admission-closure has
+been observed actually happening - only verified correct while idle.
 
 Concrete hostnames and addresses live in `condor-host-list`, which is kept
 untracked — this document names machine *classes* only.
@@ -61,18 +65,62 @@ Condor, fatal to Slurm.
 
 ## 5. Resource donation
 
-| setting | desktop / laptop | entry node | flagship | edge SBC |
-|---|---|---|---|---|
-| `NUM_CPUS` | n−1 | 2 (of 4) | 12 (of 16) | 2 (of 4) |
-| `RESERVED_MEMORY` (MB) | 4096 | 10240 | 12288 | 2048 |
-| `RESERVED_DISK` (MB) | 20480 | 20480 | 20480 | 20480 |
-| Slot model | partitionable | partitionable | partitionable | partitionable |
+**Donate everything; protect dynamically.** Static reservation and the
+contention policy in section 6 defend against the same thing, so holding
+capacity back only idles it in the common case - nobody is using the machine -
+while the policy would suspend anyway the moment someone arrives.
 
-The flagship reserves heavily: it runs a production database. A DB whose page
-cache is evicted does not crash, it gets slow.
+That applies to **workers**. The **entry node is deliberately different**: it
+carries the collector, negotiator and schedd, and if the schedd cannot fork
+shadows or fsync `job_queue.log` then nothing anywhere in the pool runs.
 
-Edge SBC restrictions: SD-card storage (write endurance), runs a wireless AP and
-other listening services. Small slot, no I/O-heavy work.
+| resource | worker | entry node | why they differ |
+|---|---|---|---|
+| CPU | **all threads** | reserve ~half | daemons need guaranteed headroom |
+| Memory | **90%** offered | ~35% offered | one shadow per running job, pool-wide |
+| Disk | reserved + tiers | reserved + tiers **+ transfer caps** | SPOOL is the funnel every job crosses |
+| Load scaling | `TotalCpus` | **`DetectedCpus`** | see below |
+| Load thresholds | 0.25 / 0.50 | **0.50 / 0.75** | see below |
+
+### Scale on DetectedCpus, not TotalCpus
+
+`TotalCpus` is what Condor **advertises** - capped by `NUM_CPUS` - while
+`TotalLoadAvg` is measured across the **whole machine**. On a 4-core box
+advertising 2, scaling load thresholds by `TotalCpus` compares a 4-core load
+against a 2-core yardstick: the machine reads as saturated while half of it sits
+idle. Workers where `NUM_CPUS` is unset are unaffected only by coincidence.
+
+### The entry node's thresholds must be looser
+
+`condor_shadow` processes are children of the **schedd**, not the startd, so
+they are **not** counted in `CondorLoadAvg`. Every file transfer the entry node
+brokers for the whole pool therefore lands in `NonCondorLoad` and looks like
+owner activity. Worker-tight thresholds would make the entry node close
+admission - and flap its own running jobs - purely for doing its job.
+
+### Disk floors: absolute on the entry node, fractional on workers
+
+A fraction suits a volume dedicated to Condor. The entry node's SPOOL, EXECUTE,
+`job_queue.log` and OS share one filesystem that is already ~86% full of
+unrelated data; what the OS needs there is a **fixed reserve**, not a
+percentage of a large mostly-full disk.
+
+### SPOOL cannot be protected by the startd policy
+
+`condor_submit -spool` writes into SPOOL at **submit** time, before any
+matchmaking, so `START` never sees it. The only controls are schedd-side
+`MAX_TRANSFER_INPUT_MB` / `MAX_TRANSFER_OUTPUT_MB`. Size them against the disk
+that exists: at 2048 MB per job with 32 GB free, sixteen concurrent submissions
+fill the volume - and `MAX_JOBS_RUNNING` permits 200. Filling SPOOL stops the
+schedd writing its queue, which stops the **entire pool**.
+
+### Sandbox hygiene
+
+The starter removes scratch as soon as output transfer completes, so the normal
+path is already immediate. The leak is **orphans** - crashed starters, evicted
+and held jobs - which nothing reaps until `condor_preen` runs, defaulting to
+**once every 24 hours**. On a disk-limited design that is the actual failure
+mode. Set `PREEN_INTERVAL` hourly with `PREEN_ARGS = -r`.
 
 ## 6. Owner policy — contention-driven, mandatory on every worker
 
@@ -83,16 +131,65 @@ are evicted.
 ```
 NonCondorLoad = (TotalLoadAvg - TotalCondorLoadAvg)
 
-START    = (OwnerSessionActive =!= True) && (NonCondorLoad < 1.0)
-SUSPEND  = (NonCondorLoad > 2.0)
-CONTINUE = (NonCondorLoad < 1.0)
-MEM_MARGIN_FRACTION = 0.15
-PREEMPT  = (HostMemAvailMB > 0) && (HostMemAvailMB < (HostMemTotalMB * MEM_MARGIN_FRACTION))
+TIER 1 - admission (costs nothing, loses nothing)
+  START = (OwnerSessionActive =!= True)
+       && (NonCondorLoad   < TotalCpus * 0.25)      is the OWNER busy?
+       && (TotalLoadAvg    < TotalCpus * 0.90)      is the MACHINE busy?
+       && (HostCpuPsiAvg10 < 20.0)                  actual CPU stall, 10s window
+       && (HostMemAvailMB  > TotalMem  * 0.25)
+       && (HostDiskAvailMB > TotalDisk * 0.10)
+       && FITS_CPU && FITS_MEM && FITS_DISK         does THIS job fit?
 
-MaxJobRetirementTime = 0
-MachineMaxVacateTime = 30
-KILL     = FALSE
+  FITS_MEM = (TARGET.RequestMemory =?= UNDEFINED)
+          || (TARGET.RequestMemory < (HostMemAvailMB - soft floor))
+
+  SUSPEND  = (NonCondorLoad > TotalCpus * 0.50)
+  CONTINUE = (NonCondorLoad < TotalCpus * 0.25)
+
+TIER 2 - eviction (the only thing that discards work)
+  PREEMPT = (HostMemAvailMB > 0)
+         && (  (HostMemAvailMB  < max(1GB, TotalMem * 0.10))
+            || (HostMemPsiAvg10 > 10.0)
+            || (HostDiskAvailMB < TotalDisk * 0.05) )
+
+  MaxJobRetirementTime = 0
+  MachineMaxVacateTime = 30
 ```
+
+**Admission is gated on measurement, never on accounting.** Condor's slot
+accounting is *request*-based: a job asking for 1 core may spawn 8 threads, one
+asking 256 MB may use 10 GB. Sixteen "one-core" jobs can saturate a 16-core box
+while matchmaking still believes it is empty. Every term above comes from
+`/proc`.
+
+**The two load terms are not redundant.** `NonCondorLoad` subtracts Condor's own
+load and answers *is the owner busy*; `TotalLoadAvg` includes it and answers *is
+the machine busy*. With only the first, a box at load 60 driven entirely by
+Condor reads as idle and keeps admitting more - the owner stays protected while
+the machine saturates.
+
+**Admission is graduated, not binary.** Comparing each job's request against
+measured headroom lets a small job land where a large one cannot. True dynamic
+advertisement is not available: `Cpus`/`Memory` on a partitionable slot are
+configured capacity minus request-based allocations, computed by the startd
+itself, and cannot safely be overridden. So `condor_status` shows nominal
+capacity while `START` holds the truth - a machine can display free slots and
+still decline work. Diagnose with:
+
+```
+condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 HostMemAvailMB HostDiskAvailMB
+```
+
+**PSI is the signal that means "the owner is suffering".** Free-memory and load
+average are proxies; `/proc/pressure/*` measures the percentage of time tasks
+actually stalled. A box can report gigabytes available while thrashing, and load
+average is a decaying 1-minute mean that lets a negotiation cycle admit a burst
+before it registers. PSI `avg10` reacts in ten seconds.
+
+**Thresholds scale with the machine.** `TotalCpus * fraction` and
+`max(1GB, TotalMem * 0.10)` via `ifThenElse`: 10% of a 4 GB SBC is 410 MB, too
+little to avoid thrashing, while 25% of a 30 GB box is 7.5 GB, needlessly idle.
+One expression, correct at both ends.
 
 **CPU contention suspends. Memory pressure evicts. Time does nothing.**
 A suspended job costs the owner no CPU at all - `SIGSTOP` means it is not
@@ -139,6 +236,32 @@ Two traps in that expression:
 - **Guard with `HostMemAvailMB > 0`.** Before the cron's first run the attribute
   is 0 or UNDEFINED, and a bare comparison reads as pressure - evicting every
   job the moment the startd starts.
+
+### The policy is inert without the stanza that feeds it
+
+Every attribute the policy references comes from the `STARTD_CRON` job. Without
+that stanza the config still **parses**, `condor_config_val` still reports the
+correct expressions, and `condor_status` still shows a healthy `Unclaimed/Idle`
+slot - while `START` evaluates to `UNDEFINED` and both admission control and
+eviction are silently dead.
+
+`UNDEFINED` is **worse than `false`**: a false `START` parks the slot in `Owner`
+state, which is visible. Undefined leaves it displaying `Unclaimed/Idle`,
+indistinguishable from healthy.
+
+This was introduced twice by edits that replaced the policy section wholesale
+and took the stanza with it. Keep the stanza **above** the policy header, and
+after any config edit verify the attributes are on the **slot ad**, not merely
+in the config:
+
+```
+condor_status -af Name Start OwnerSessionActive HostMemAvailMB HostDiskAvailMB
+```
+
+Note the collector only sees a changed ad on the startd's next update
+(`UPDATE_INTERVAL`, default 300s), so a newly published attribute can read
+`undefined` for several minutes without anything being wrong. A `condor_reconfig`
+forces a fresh ad.
 
 ### Do not write this policy against ConsoleIdle or KeyboardIdle
 
@@ -337,22 +460,44 @@ install, config, token, and repeated owner-policy revisions.
 
 | phase | scope | status |
 |---|---|---|
-| 0 | Install on entry node. Single-machine pool. Prove submit path | **done** |
+| 0 | Entry node install. Single-machine pool. Prove submit path | **done** |
 | 3 | Remote submission: IDTOKENS + 9618, no shell anywhere | **done** (brought forward) |
 | — | Role-based mDNS naming; no IPs or hostnames in config | **done** |
-| 1 | Add one x86 worker. Owner policy, cgroups, kbdd | blocked on cgroups |
-| 2 | Add flagship worker | not started |
+| — | Contention-driven owner policy on the entry node | **done** |
+| 1/2 | Add a second worker; daemon token; jobs distribute | **done** |
 | 4 | JupyterHub + batchspawner CondorSpawner | not started |
 | 5 | ARM workers; GPU discovery | not started |
-| 6 | Overlay VPN for off-LAN machines | not started |
+| 6 | Overlay VPN for off-LAN machines | deferred by decision |
 
 Phase 3 was pulled ahead of 1 and 2 because it is the requirement the whole
-design exists to satisfy; proving it early on two machines de-risks the rest.
+design exists to satisfy; proving it early de-risked the rest.
+
+### Adding a worker
+
+1. Install the package.
+2. Drop in the worker config: pool alias, `DEFAULT_DOMAIN_NAME`, `UID_DOMAIN`,
+   pinned `NETWORK_INTERFACE`, donation limits, owner policy, STARTD_CRON.
+3. Install `condor-owner-session` to `/usr/local/bin` (755).
+4. Install a **daemon** token to `/etc/condor/tokens.d/` (600 root).
+5. Restart, then confirm it appears in `condor_status` **and** that a job lands
+   on it.
+
+Step 4 is the one that is easy to miss. A user token does not satisfy
+`ALLOW_DAEMON`; without a daemon credential the worker starts cleanly, fails to
+register, and simply never appears - no error surfaces at the client.
+
+Do not test daemon auth with `condor_ping ... DAEMON` as an unprivileged user:
+it cannot read the root-owned token, falls back to SSL, and blocks on an
+interactive trust prompt. Check pool membership instead.
 
 ## 15. Open decisions and risks
 
 | item | status |
 |---|---|
+| **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
+| Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
+| Nothing has been tested **under real load** - no suspend, eviction, or admission-closure has been observed happening | **Untested.** Verify before other people's machines join |
+| `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |
 | cgroup per-job enforcement does not work on the installed build | **Resolved by decision, not by fix.** Per-job caps are not wanted on machines this size; memory is protected system-wide by eviction. `CGROUP_MEMORY_LIMIT_POLICY = none` makes the config honest about it |
 | Memory eviction is only as fresh as the STARTD_CRON period (20s) | **Accepted.** A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim |
 | A job can stay suspended indefinitely on a persistently busy machine, holding its claim and RSS | **Accepted deliberately.** It resumes when load drops. If it becomes a problem the fix is a cap on suspended time, not a shorter PREEMPT |
