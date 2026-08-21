@@ -10,16 +10,14 @@ across all three and return their output.
 
 Workers carry **no network configuration**: each derives at startup which of the
 entry node's two addresses it can reach (section 11), so a machine that moves
-between subnets reconfigures itself. Remote submission works from a third
-machine with no login, no shared filesystem, and no home directory on the entry
-node. Jobs distribute across both machines. Both carry a contention-driven owner
-policy driven entirely by measured system state.
+between subnets reconfigures itself.
 
-Reboot-tested: the entry node survives a restart with its queue, config and
-policy intact (section 13a).
+**Stress-tested.** Both halves of the owner policy have been observed firing
+under real load, not merely configured (section 6a). Reboot-tested: the entry
+node survives a restart with its queue, config and policy intact (section 13a).
 
-Not yet exercised **under load**: no suspend, eviction, or admission-closure has
-been observed actually happening - only verified correct while idle.
+Untested: disk-pressure eviction, which would mean deliberately filling the
+volume that holds the schedd's queue.
 
 Concrete hostnames and addresses live in `condor-host-list`, which is kept
 untracked — this document names machine *classes* only.
@@ -137,6 +135,18 @@ that exists: at 2048 MB per job with 32 GB free, sixteen concurrent submissions
 fill the volume - and `MAX_JOBS_RUNNING` permits 200. Filling SPOOL stops the
 schedd writing its queue, which stops the **entire pool**.
 
+### Advertisement cadence
+
+`UPDATE_INTERVAL` defaults to 300s, sized for pools of thousands. At this scale
+an ad every 30s is free, and the default costs twice: `condor_status` showed a
+frozen value for 2.5 minutes while load was driven from 1 to 15, and after a
+central-manager restart workers took ~2 x the interval to reappear - one cycle
+to find their cached security session dead, another to re-authenticate.
+
+It does **not** change how fast policy reacts. The startd evaluates
+START/SUSPEND/PREEMPT every `POLLING_INTERVAL` (5s) regardless. The default made
+the policy invisible and re-registration slow, not the policy slow.
+
 ### Sandbox hygiene
 
 The starter removes scratch as soon as output transfer completes, so the normal
@@ -165,11 +175,13 @@ TIER 1 - admission (costs nothing, loses nothing)
   FITS_MEM = (TARGET.RequestMemory =?= UNDEFINED)
           || (TARGET.RequestMemory < (HostMemAvailMB - soft floor))
 
-  SUSPEND  = (NonCondorLoad > TotalCpus * 0.75)
-  CONTINUE = (NonCondorLoad < TotalCpus * 0.50)
+  WANT_SUSPEND = !(EVICT_PRESSURE)     <- selects the mechanism, see 6a
+  SUSPEND      = (NonCondorLoad > TotalCpus * 0.75)
+  CONTINUE     = (NonCondorLoad < TotalCpus * 0.50)
 
 TIER 2 - eviction (the only thing that discards work)
-  PREEMPT = (HostMemAvailMB > 0)
+  PREEMPT = EVICT_PRESSURE =
+            (HostMemAvailMB > 0)
          && (  (HostMemAvailMB  < max(1GB, TotalMem * 0.10))
             || (HostMemPsiAvg10 > 10.0)
             || (HostDiskAvailMB < TotalDisk * 0.05) )
@@ -343,6 +355,74 @@ machine, including preempting a stranger's job. This is the adoption lever -
 
 Failure mode to avoid: nobody files a bug when Condor makes their PC stutter.
 They run `systemctl disable condor` and the pool shrinks silently.
+
+## 6a. WANT_SUSPEND selects the mechanism - it is not a feature flag
+
+The single most important knob in section 6, and the least obvious.
+
+When the startd decides a job must go, `WANT_SUSPEND` decides **which
+expression it consults**:
+
+```
+WANT_SUSPEND true   -> consults SUSPEND;  PREEMPT is ignored
+WANT_SUSPEND false  -> consults PREEMPT;  SUSPEND is ignored
+```
+
+They are alternatives, not layers. Both failure modes were found by stress test,
+and **neither was visible any other way** - `condor_config_val` printed a
+correct expression throughout, `condor_status` showed healthy machines, and no
+log recorded anything:
+
+| setting | consequence | measured |
+|---|---|---|
+| `False` (the default) | `SUSPEND` never fires | load driven to 15.72 against a 12.0 threshold, held 90s: silent |
+| constant `True` | `PREEMPT` never fires | memory held 1.5 GB below the eviction floor for 60s: silent |
+
+The second was introduced while fixing the first. So it must be an
+**expression**, inverting on the pressure that suspension cannot relieve:
+
+```
+EVICT_PRESSURE = memory below floor OR memory PSI stalling OR disk below floor
+
+WANT_SUSPEND = !(EVICT_PRESSURE)     CPU contention -> suspend
+PREEMPT      =   EVICT_PRESSURE      memory/disk    -> evict
+SUSPEND      = NonCondorLoad > 0.75 x cpus
+```
+
+### Observed behaviour
+
+Suspend and resume, with the hysteresis gap doing its job:
+
+```
+23:34:30  load 11.12                             Busy
+23:34:40  SUSPEND is TRUE    Busy -> Suspended       (threshold 12.0)
+23:36:45  CONTINUE is TRUE   Suspended -> Busy       (resumed at 7.95)
+```
+
+Eviction, 11 seconds after pressure began, via the full graceful path:
+
+```
+00:18:16  PREEMPT is TRUE       Busy -> Retiring
+00:18:16  WANT_VACATE is TRUE   Claimed/Retiring -> Preempting/Vacating
+00:18:16                        -> Owner/Idle -> Unclaimed -> Delete
+00:19:09  job re-matched, evicted again while pressure persisted
+```
+
+### How to test this safely
+
+Do not drive a machine to genuine memory pressure to test a threshold,
+especially one running a database. **Raise the floor to meet the memory
+instead**: override the eviction threshold to just under current availability,
+allocate a couple of GB, and the real code path runs with minimal risk.
+
+Override **both** `PREEMPT` and `WANT_SUSPEND` when doing so. Overriding
+`PREEMPT` alone leaves `WANT_SUSPEND` pointing at the real floor, where it stays
+true, `SUSPEND` is consulted instead, and the test fails for the wrong reason.
+
+Generators must be self-terminating - `timeout` owning the deadline, so nothing
+survives a dropped session - and the CPU loop must not fork. An early version
+tested its deadline with `date +%s` each iteration and produced load 7 from 14
+workers, below the threshold, which looked like a policy failure.
 
 ## 7. Workload constraints
 
@@ -685,7 +765,8 @@ interactive trust prompt. Check pool membership instead.
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
-| Nothing has been tested **under real load** - no suspend, eviction, or admission-closure has been observed happening | **Untested.** Verify before other people's machines join |
+| **Disk-pressure eviction is untested** - it would mean filling the volume that also holds the schedd's queue | **Accepted.** The expression composes correctly with the entry node's absolute floors, but has not been exercised |
+| Suspend and memory eviction under real load | **Verified** (section 6a). Admission-closure under saturation still unobserved |
 | `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |
 | cgroup per-job enforcement does not work on the installed build | **Resolved by decision, not by fix.** Per-job caps are not wanted on machines this size; memory is protected system-wide by eviction. `CGROUP_MEMORY_LIMIT_POLICY = none` makes the config honest about it |
 | Memory eviction is only as fresh as the STARTD_CRON period (20s) | **Accepted.** A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim |
