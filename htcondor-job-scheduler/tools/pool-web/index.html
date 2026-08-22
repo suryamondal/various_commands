@@ -55,8 +55,9 @@
 
 <table>
   <thead><tr>
-    <th>machine</th><th>cores</th><th class="num">load</th>
-    <th>memory offered</th><th class="num">free</th><th>start</th>
+    <th>machine</th><th class="num">cpu load</th><th>cores</th>
+    <th>memory offered</th><th class="num">mem free</th>
+    <th class="num">disk free</th><th>start</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -106,13 +107,14 @@ async function tick() {
       const memUsed = m.mem_total ? 1 - (m.mem_adv / m.mem_total) : 0;
       return '<tr>' +
         '<td>' + m.machine + (m.ledger ? '<span class="tag">ledger</span>' : '') + '</td>' +
+        '<td class="num">' + m.load.toFixed(2) + '</td>' +
         '<td>' + bar(m.cpus_total ? used / m.cpus_total : 0) +
           '<small>' + used.toFixed(0) + '/' + m.cpus_total.toFixed(0) +
           (m.suspended ? ' · ' + m.suspended + ' suspended' : '') + '</small></td>' +
-        '<td class="num">' + m.load.toFixed(2) + '</td>' +
         '<td>' + bar(memUsed) +
           '<small>' + (m.mem_adv / 1024).toFixed(1) + ' GB offered</small></td>' +
         '<td class="num">' + (m.mem_avail / 1024).toFixed(1) + ' GB</td>' +
+        '<td class="num">' + (m.disk_avail / 1024).toFixed(0) + ' GB</td>' +
         '<td>' + (m.start ? 'yes' : '<span class="no">no</span>') + '</td>' +
         '</tr>';
     }).join('');

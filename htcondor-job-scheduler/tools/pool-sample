@@ -30,7 +30,7 @@ import time
 
 ATTRS = ["Name", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
          "TotalLoadAvg", "TotalCondorLoadAvg", "HostCpuPsiAvg10", "HostMemPsiAvg10",
-         "HostMemAvailMB", "HostDiskAvailMB", "Start"]
+         "HostMemAvailMB", "HostDiskAvailMB", "HostDiskTotalMB", "Start"]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS samples (
   cpus_total  REAL, cpus_free REAL,
   load        REAL, condor_load REAL,
   mem_adv     REAL, mem_total REAL, mem_avail REAL,
+  disk_avail  REAL, disk_total REAL,
   cpu_psi     REAL, mem_psi REAL,
   start       INTEGER,
   PRIMARY KEY (ts, machine)
@@ -157,6 +158,7 @@ def poll(pool):
             load=num(d["TotalLoadAvg"]), condor_load=num(d["TotalCondorLoadAvg"]),
             mem_adv=num(d["Memory"]), mem_total=num(d["TotalMemory"]),
             mem_avail=num(d["HostMemAvailMB"]),
+            disk_avail=num(d["HostDiskAvailMB"]), disk_total=num(d["HostDiskTotalMB"]),
             cpu_psi=num(d["HostCpuPsiAvg10"]), mem_psi=num(d["HostMemPsiAvg10"]),
             start=1 if d["Start"].lower() == "true" else 0,
         )
@@ -196,6 +198,22 @@ def poll(pool):
 
 
 
+def migrate(db):
+    """Add columns that a database created by an older version will not have.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so a schema
+    change alone leaves a deployed database on the old shape and every insert
+    fails with a column-count mismatch. ALTER TABLE ADD COLUMN is cheap and
+    SQLite backfills NULL, which plots and the page already tolerate.
+    """
+    have = {r[1] for r in db.execute("PRAGMA table_info(samples)")}
+    for col, decl in (("disk_avail", "REAL"), ("disk_total", "REAL")):
+        if col not in have:
+            db.execute("ALTER TABLE samples ADD COLUMN %s %s" % (col, decl))
+            sys.stderr.write("migrated: added samples.%s\n" % col)
+    db.commit()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
@@ -210,6 +228,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(a.live)), exist_ok=True)
     db = sqlite3.connect(a.db, timeout=20)
     db.executescript(SCHEMA)
+    migrate(db)
     # WAL so the plot generator can read while this process writes.
     db.execute("PRAGMA journal_mode=WAL")
     db.commit()
@@ -222,7 +241,7 @@ def main():
             db.executemany(
                 "INSERT OR REPLACE INTO samples VALUES (:ts,:machine,:cpus_total,"
                 ":cpus_free,:load,:condor_load,:mem_adv,:mem_total,:mem_avail,"
-                ":cpu_psi,:mem_psi,:start)",
+                ":disk_avail,:disk_total,:cpu_psi,:mem_psi,:start)",
                 [dict(r, ts=ts) for r in rows])
             db.execute("INSERT OR REPLACE INTO queue VALUES (?,?,?,?,?)",
                        (ts, counts["running"], counts["idle"],
