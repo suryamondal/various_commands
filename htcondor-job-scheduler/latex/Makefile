@@ -23,6 +23,11 @@ BUILD     := build
 PDF       := $(BUILD)/$(MAIN).pdf
 LOG       := $(BUILD)/$(MAIN).log
 SOURCES   := $(MAIN).tex preamble.tex $(wildcard chapters/*.tex) $(wildcard appendix/*.tex)
+
+# Sanitisation covers the whole repo, not just this document. Two leaks reached
+# a commit because the scan only looked at latex/ while the same text had been
+# pasted into README.md as well.
+SCANNED   := $(SOURCES) $(wildcard ../*.md) $(wildcard ../handover/*.md)
 LATEXMK   := latexmk -pdf
 VIEWER    := $(shell command -v xdg-open || command -v open)
 
@@ -55,7 +60,10 @@ view: $(PDF)
 # A clean build is not the same as a correct one. Undefined references still
 # produce a PDF - with "??" where the number should be - so they are checked
 # explicitly rather than trusted to surface.
+# `clean` removes the log this reads, and an up-to-date PDF means latexmk will
+# not regenerate it - so force a build when the log is absent.
 check: $(PDF) sanitise
+	@test -f $(LOG) || $(LATEXMK) -g $(MAIN).tex >/dev/null
 	@echo "== LaTeX warnings =="
 	@grep -c "LaTeX Warning" $(LOG) | xargs printf "   %s warning(s)\n"
 	@grep "LaTeX Warning" $(LOG) || true
@@ -66,10 +74,10 @@ check: $(PDF) sanitise
 	@grep -oE "Overfull \\\\hbox \(([0-9.]+)pt" $(LOG) 2>/dev/null \
 	  | grep -oE "[0-9.]+" | awk '$$1>20' | wc -l | xargs printf "   %s\n"
 
-# The document's own rule is machine classes only. Run this before every commit.
+# The repo's rule is machine classes only. Run this before every commit.
 sanitise:
 	@echo "== sanitisation: hostnames, addresses, credentials =="
-	@if grep -rnEi "$(SECRETS)" $(SOURCES) 2>/dev/null; then \
+	@if grep -rnEi "$(SECRETS)" $(SCANNED) 2>/dev/null; then \
 	  echo "   LEAK - the above must not be committed"; exit 1; \
 	else echo "   clean"; fi
 

@@ -32,7 +32,7 @@ untracked — this document names machine *classes* only.
 | goal | consequence |
 |---|---|
 | Users never log into the entry node | remote submit only; no shells, no home dirs on entry |
-| Users' own PCs are also workers | pool is a symmetric co-op, not a donated cluster |
+| Users' own **desktops** are also workers | pool is a symmetric co-op, not a donated cluster. **Laptops may be submit-only** — see section 2 |
 | Owner always wins on their own machine | preemption policy + machine RANK are mandatory, not optional |
 | Jupyter allowed, but never on the entry node | notebooks spawn as Condor jobs on workers |
 | Mixed hardware | two architectures, three distros, some GPUs |
@@ -43,10 +43,30 @@ untracked — this document names machine *classes* only.
 |---|---|
 | Entry node | `master`, `collector`, `negotiator`, `schedd`, `startd` (limited), `shared_port` |
 | Worker | `master`, `startd`, `kbdd` |
-| User PC | worker daemons + submit client (`condor_submit -remote -spool`); **no schedd**. Template: `scripts/50-user-pc.config` |
+| User PC (desktop) | worker daemons + submit client (`condor_submit -remote -spool`); **no schedd**. Template: `scripts/50-user-pc.config` |
+| Submit-only client | **no daemons at all**; submit client only. Typically laptops. Template: `handover/macos-submit-node.md` |
 
 One schedd, on the entry node. User PCs do not queue locally — a schedd on a
 laptop dies with the lid.
+
+### Not every user machine is a worker
+
+Donation is expected of **desktops**. A laptop that only submits is a normal,
+supported member of the pool, not an opt-out:
+
+| | desktop | laptop |
+|---|---|---|
+| Reachable inbound by the entry node | yes | only while on the LAN |
+| Awake when a job is running | yes | lid decides |
+| Owner's battery and fans | mains | theirs |
+
+A worker must be **reachable inbound** to be claimed, so an off-LAN laptop would
+register, match, and then fail the claim. A submit client makes only **outbound**
+connections, which is why it works through a tunnel, behind a firewall, and from
+outside the office.
+
+Take execute capacity from machines that sit still and stay plugged in. Take
+submissions from anything.
 
 ## 3. Entry node selection
 
@@ -68,7 +88,7 @@ Requirements: `SPOOL` on NVMe; half its cores donated to compute, the rest reser
 |---|---|---|---|---|---|
 | Mini-PC (entry + worker) | x86_64 | 4 | 16 G | 30–70 G | 8+, growing; **3 in pool** |
 | Flagship worker | x86_64 | 16 | 31 G | ~270 G | 1, **in pool** |
-| Laptop | x86_64 | 12 | 8 G | ~250 G | 1+ |
+| Laptop | x86_64 | 12 | 8 G | ~250 G | 1+, **submit-only by default** |
 | Edge SBC | aarch64 | 4 | 4 G | ~36 G (SD) | 1+ |
 | Jetson | aarch64 | TBD | TBD | TBD | future, GPU |
 

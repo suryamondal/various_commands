@@ -38,7 +38,7 @@ another machine's filesystem layout.
 \textbf{Goal} & \textbf{Consequence} \\
 \midrule
 Users never log into the entry node & Remote submit only; no shells, no home directories on the entry node \\
-Users' own PCs are also workers & The pool is a symmetric co-operative, not a donated cluster \\
+Users' own \emph{desktops} are also workers & The pool is a symmetric co-operative, not a donated cluster. Laptops may be submit-only \\
 The owner always wins on their own machine & Preemption policy and machine \kn{RANK} are mandatory, not optional \\
 Jupyter is allowed, but never on the entry node & Notebooks spawn as Condor jobs on workers \\
 Mixed hardware is the normal case & Two architectures, three distributions, some GPUs \\
@@ -104,4 +104,7 @@ submit client and a startd and \textbf{no schedd}: its owner submits against
 the entry node's queue from their own desktop, and the same desktop executes
 other people's jobs when they are not using it. That is the symmetric
 co-operative in Table~1.1, and everything before it was scaffolding.
+
+Donation is expected of \emph{desktops}. A laptop that only submits is a
+normal member of the pool, not an opt-out --- see \S\ref{sec:notallworkers}.
 \end{keypoint}

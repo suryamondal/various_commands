@@ -11,11 +11,40 @@
 \midrule
 Entry node & \kn{master}, \kn{collector}, \kn{negotiator}, \kn{schedd}, \kn{startd} (limited), \kn{shared\_port} \\
 Worker & \kn{master}, \kn{startd} \\
-User PC & Worker daemons plus the submit client (\kn{condor\_submit -remote -spool}); \textbf{no schedd} \\
+User PC (desktop) & Worker daemons plus the submit client (\kn{condor\_submit -remote -spool}); \textbf{no schedd} \\
+Submit-only client & \textbf{No daemons at all}; submit client only. Typically laptops \\
 \bottomrule
 \end{tabularx}
 \caption{Daemon layout by role.}
 \end{table}
+
+\section{Not every user machine is a worker}
+\label{sec:notallworkers}
+
+Donation is expected of \textbf{desktops}, which sit still and stay plugged in.
+A laptop that only submits is a normal, supported member of the pool.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{Y L{0.18\textwidth} L{0.24\textwidth}}
+\toprule
+& \textbf{Desktop} & \textbf{Laptop} \\
+\midrule
+Reachable inbound by the entry node & yes & only while on the LAN \\
+Awake while a job runs & yes & the lid decides \\
+Owner's battery and fans & mains & theirs \\
+\bottomrule
+\end{tabularx}
+\caption{Why the execute role does not travel.}
+\end{table}
+
+A worker must be \textbf{reachable inbound} to be claimed, so an off-LAN laptop
+would register, match, and then fail the claim. A submit client makes only
+\textbf{outbound} connections, which is why it works through a tunnel, behind a
+firewall, and from outside the office.
+
+Take execute capacity from machines that sit still. Take submissions from
+anything.
 
 There is exactly one schedd, on the entry node. This is deliberate: a schedd on
 a laptop dies with the lid, taking its queue with it. Centralising it means a
