@@ -1,0 +1,159 @@
+#!/bin/sh
+# STARTD_CRON job: publish the machine-wide facts the owner policy needs and
+# Condor does not provide.
+#
+#   OwnerSessionActive  - is a human actually using this machine?
+#       Condor's KeyboardIdle/ConsoleIdle only see the LOCAL X console, and are
+#       blind to RDP. They are also absent or sentinel (-1) on dynamic slots.
+#
+#   HostMemAvailMB / HostMemTotalMB
+#       Condor publishes no free-memory attribute. Memory is protected
+#       system-wide, so the policy needs both to express margins as fractions.
+#
+#   HostCpuPsiAvg10     - real CPU contention, reacting in 10s not 60s.
+#       Condor's slot accounting is REQUEST-based: a job asking for 1 core may
+#       spawn 8 threads, so 16 one-core jobs can saturate a 16-core box.
+#       Admission must be gated on measured state, not on what jobs claimed.
+#
+#   HostMemPsiAvg10     - real memory pressure, not a free-memory guess.
+#       Percentage of the last 10s that tasks stalled waiting on memory. A box
+#       can show gigabytes "available" while thrashing; PSI catches that.
+#
+#   HostDiskAvailMB / HostDiskTotalMB  (the EXECUTE filesystem)
+#       Disk is the one resource with no graceful degradation: filling it
+#       breaks the OS and every other service on the machine.
+#
+# Every attribute here propagates to dynamic slots, unlike ConsoleIdle.
+
+ACTIVE=False
+REASON=none
+
+# 1. An established connection on the RDP port means a remote user is on the
+#    machine right now.
+if ss -Htn state established 2>/dev/null | awk '{print $3}' | grep -q ':3389$'; then
+    ACTIVE=True
+    REASON=rdp
+fi
+
+# 2. A local graphical session that is not the gdm greeter.
+for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+    t=$(loginctl show-session "$s" -p Type --value 2>/dev/null)
+    a=$(loginctl show-session "$s" -p Active --value 2>/dev/null)
+    n=$(loginctl show-session "$s" -p Name --value 2>/dev/null)
+    case "$t" in
+        x11|wayland|mir) ;;
+        *) continue ;;
+    esac
+    [ "$a" = "yes" ] || continue
+    [ "$n" = "gdm" ] && continue
+    ACTIVE=True
+    if [ "$REASON" = "none" ]; then REASON=graphical; else REASON=both; fi
+done
+
+# 3. MemAvailable, not MemFree: the kernel's own estimate of what is obtainable
+#    without swapping. MemFree ignores reclaimable page cache and would report
+#    false pressure on any machine that has been running a while.
+MEMAVAIL=$(awk '/^MemAvailable:/ { print int($2/1024) }' /proc/meminfo 2>/dev/null)
+MEMTOTAL=$(awk '/^MemTotal:/     { print int($2/1024) }' /proc/meminfo 2>/dev/null)
+
+# 4. Memory PSI. Needs CONFIG_PSI; absent on some kernels, in which case report
+#    0 so the policy falls back to the MemAvailable signal rather than reading
+#    a missing file as pressure.
+PSI=$(awk '/^some/ { sub(/avg10=/, "", $2); print $2; exit }' /proc/pressure/memory 2>/dev/null)
+
+# 4b. CPU PSI. Load average is a decaying 1-MINUTE mean, so a negotiation cycle
+#     can admit a burst of jobs long before load reflects them, then oscillate.
+#     PSI avg10 reacts in ten seconds and measures actual contention rather
+#     than a runnable-process count.
+CPUPSI=$(awk '/^some/ { sub(/avg10=/, "", $2); print $2; exit }' /proc/pressure/cpu 2>/dev/null)
+
+# 5. Free space on the filesystem holding the job sandboxes.
+EXECDIR=$(condor_config_val EXECUTE 2>/dev/null)
+[ -d "$EXECDIR" ] || EXECDIR=/var/lib/condor/execute
+[ -d "$EXECDIR" ] || EXECDIR=/
+DISKAVAIL=$(df -Pm "$EXECDIR" 2>/dev/null | awk 'NR==2 { print $4 }')
+DISKTOTAL=$(df -Pm "$EXECDIR" 2>/dev/null | awk 'NR==2 { print $2 }')
+
+# 6. Free space on the SPOOL filesystem. Only the entry node has a schedd, but
+#    the attribute is published everywhere so one script serves every host.
+#    NOTE: the startd policy cannot protect SPOOL - condor_submit -spool writes
+#    there at SUBMIT time, before any matchmaking, so START never sees it.
+#    SPOOL is bounded schedd-side by MAX_TRANSFER_INPUT_MB / _OUTPUT_MB.
+#    This is published for visibility and alerting.
+SPOOLDIR=$(condor_config_val SPOOL 2>/dev/null)
+[ -d "$SPOOLDIR" ] || SPOOLDIR=/var/spool/condor
+[ -d "$SPOOLDIR" ] || SPOOLDIR=/
+SPOOLAVAIL=$(df -Pm "$SPOOLDIR" 2>/dev/null | awk 'NR==2 { print $4 }')
+SPOOLTOTAL=$(df -Pm "$SPOOLDIR" 2>/dev/null | awk 'NR==2 { print $2 }')
+
+# --- Memory: replace the request LEDGER with measured headroom -------------
+# The negotiator matches a job against the partitionable slot's advertised
+# Memory. Left alone that is configured capacity minus what has been PROMISED
+# to existing dynamic slots - an accounting figure, not a measurement - so a
+# machine whose jobs asked for far more than they use refuses work while idle.
+# Measured: 8 jobs requesting 3 GB each left a 16-core box advertising 2366 MB
+# free while 24589 MB was genuinely available, with half its cores unused.
+#
+# Publishing Memory here overrides the startd's computed value, and the startd
+# carves dynamic slots against the published number. Verified: 12 jobs at 3 GB
+# each ran concurrently on a 26942 MB machine, no claim refusals, and Cpus
+# still decremented correctly. An earlier revision of the policy doc claimed
+# this could not safely be done; that was asserted, never tested, and wrong.
+#
+# Subtract the soft floor rather than advertising raw MemAvailable, so the
+# ADVERTISEMENT agrees with what START will actually admit. Advertising the raw
+# figure would let a job match and then be refused by FITS_MEM - a job sitting
+# Idle against a machine that looks healthy, which is the failure shape this
+# whole policy is written to avoid.
+#
+# No guard is weakened by this. Every memory term in START and PREEMPT reads
+# HostMemAvailMB / HostMemTotalMB above, never the slot ad. Eviction behaves
+# exactly as before; it simply has more work to act on.
+#
+# Disk is deliberately NOT treated this way. It is the one resource with no
+# graceful degradation, so its ledger stays.
+#
+# The floor is max(START's soft floor, RESERVED_MEMORY), which is what keeps one
+# script correct on every host. Workers set RESERVED_MEMORY to ~10%, so the 25%
+# soft floor dominates and nothing changes for them. The ENTRY NODE reserves far
+# more on purpose - it carries the collector, negotiator and schedd, and if the
+# schedd cannot fork shadows the whole pool stops - so its reservation dominates
+# instead. Using the soft floor alone there would advertise roughly double what
+# that machine is meant to offer, on the one host that must not be squeezed.
+RESMEM=$(condor_config_val RESERVED_MEMORY 2>/dev/null)
+case "$RESMEM" in ''|*[!0-9]*) RESMEM=0 ;; esac
+MEMFLOOR=$(( ${MEMTOTAL:-0} / 4 ))
+[ "$RESMEM" -gt "$MEMFLOOR" ] && MEMFLOOR=$RESMEM
+ADVMEM=$(( ${MEMAVAIL:-0} - MEMFLOOR ))
+[ "$ADVMEM" -lt 0 ] && ADVMEM=0
+
+# WORKERS ONLY. The entry node keeps HTCondor's reservation ledger, on purpose.
+#
+# It carries the collector, negotiator and schedd, and if the schedd cannot fork
+# shadows or fsync its queue then nothing anywhere in the pool runs. Everything
+# else about that machine is deliberately conservative - half its cores, ~35% of
+# its memory - and opening its memory admission to measured headroom would undo
+# that on the one host whose failure is not local.
+#
+# The reservation semantics are also worth MORE there than on a worker: the
+# schedd's own shadows are what the reservation protects, and unlike a job's
+# request_memory that figure is not a guess.
+#
+# Detected rather than configured, so the same script is correct on every host
+# and cannot be made wrong by deploying it to the wrong one. This file stays
+# identical fleet-wide, which section 15 of the policy doc lists as a resolved
+# risk - a per-host variant would quietly reintroduce it.
+case " $(condor_config_val DAEMON_LIST 2>/dev/null) " in
+    *SCHEDD*) : ;;
+    *)        echo "Memory = ${ADVMEM}" ;;
+esac
+echo "OwnerSessionActive = $ACTIVE"
+echo "OwnerSessionReason = \"$REASON\""
+echo "HostMemAvailMB = ${MEMAVAIL:-0}"
+echo "HostMemTotalMB = ${MEMTOTAL:-0}"
+echo "HostMemPsiAvg10 = ${PSI:-0}"
+echo "HostCpuPsiAvg10 = ${CPUPSI:-0}"
+echo "HostDiskAvailMB = ${DISKAVAIL:-0}"
+echo "HostDiskTotalMB = ${DISKTOTAL:-0}"
+echo "HostSpoolAvailMB = ${SPOOLAVAIL:-0}"
+echo "HostSpoolTotalMB = ${SPOOLTOTAL:-0}"

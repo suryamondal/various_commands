@@ -66,10 +66,45 @@ machine drowns. \S\ref{sec:closure} shows this measured.
 Comparing each job's request against measured headroom lets a small job land
 where a large one cannot. This is what the \kn{FITS\_*} terms do.
 
-True dynamic advertisement is not available. \kn{Cpus} and \kn{Memory} on a
-partitionable slot are configured capacity minus request-based allocations,
-computed by the startd itself, and cannot safely be overridden. So
-\kn{condor\_status} shows nominal capacity while \kn{START} holds the truth.
+\kn{START}, however, is not the first gate. The negotiator matches a job
+against the partitionable slot's advertised \kn{Memory}, which is a
+\emph{ledger} --- configured capacity minus what has been promised to existing
+dynamic slots --- not a measurement. A job is rejected before \kn{START} is
+consulted if the ledger says no.
+
+\begin{trap}
+Measured on a 16-core, 31\,GB worker running eight jobs that each
+\emph{requested} 3\,GB and used almost nothing: the slot advertised
+\textbf{2366\,MB} free while \kn{MemAvailable} was \textbf{24589\,MB}, and
+eight of sixteen cores sat idle. Accounting, not measurement, was the binding
+constraint --- the exact thing this policy exists to avoid.
+\end{trap}
+
+An earlier revision of this report claimed \kn{Memory} ``cannot safely be
+overridden''. That was asserted, not tested, and it is wrong. A
+\kn{STARTD\_CRON} job publishing \kn{Memory} overrides the computed value, and
+the startd carves dynamic slots against it: twelve jobs requesting 3\,GB each
+ran concurrently on a machine with \kn{TotalMemory} of 26942\,MB, with no
+claim refusals and \kn{Cpus} still decrementing correctly.
+
+Publish measured headroom \emph{minus the soft floor}, so the advertisement
+agrees with what \kn{START} will admit --- advertising raw \kn{MemAvailable}
+would let a job match and then be refused by \kn{FITS\_MEM}. No guard is
+weakened: every memory term in \kn{START} and \kn{PREEMPT} reads the cron's
+\kn{Host*} attributes, never the slot ad.
+
+\begin{keypoint}
+\textbf{Workers only.} The entry node keeps the reservation ledger, and the
+cron detects that itself --- it publishes no \kn{Memory} when \kn{SCHEDD} is in
+\kn{DAEMON\_LIST}, so one script stays correct fleet-wide.
+
+Its failure is not local: if the schedd cannot fork shadows, nothing anywhere in
+the pool runs. The reservation also protects something real there --- one shadow
+per running job, pool-wide --- rather than a job's guess at its own footprint.
+And its \kn{RESERVED\_MEMORY} is large on purpose, so a naive
+\kn{MemAvailable} minus 25\% would have advertised roughly double what that
+machine is meant to offer.
+\end{keypoint}
 
 \begin{trap}
 \textbf{A machine can display free slots and still decline every job.} This is

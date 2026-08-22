@@ -228,12 +228,81 @@ Condor reads as idle and keeps admitting more - the owner stays protected while
 the machine saturates.
 
 **Admission is graduated, not binary.** Comparing each job's request against
-measured headroom lets a small job land where a large one cannot. True dynamic
-advertisement is not available: `Cpus`/`Memory` on a partitionable slot are
-configured capacity minus request-based allocations, computed by the startd
-itself, and cannot safely be overridden. So `condor_status` shows nominal
-capacity while `START` holds the truth - a machine can display free slots and
-still decline work. Diagnose with:
+measured headroom lets a small job land where a large one cannot.
+
+**But `START` is not the first gate, and for a long time this document said the
+first gate could not be moved.** The negotiator matches a job against the
+partitionable slot's advertised `Memory`, which is a LEDGER - configured
+capacity minus what has been promised to existing dynamic slots - not a
+measurement. A job is rejected before `START` is ever consulted if the ledger
+says no.
+
+Measured on a 16-core, 31 GB worker running eight jobs that each *requested*
+3 GB and used essentially nothing:
+
+```
+TotalMemory                 26942
+8 dynamic slots x 3072   -  24576
+                           ------
+advertised Memory            2366   <- machine refuses more work
+MemAvailable (real)         24589   <- ten times as much genuinely free
+```
+
+Eight of sixteen cores idle, because of accounting. That contradicts the rule
+this whole policy is built on: **admission gated on measurement, never on
+accounting.**
+
+### Memory CAN be overridden, and the ledger is not the last word
+
+An earlier revision of this document said `Cpus`/`Memory` "cannot safely be
+overridden". That was wrong, and it was asserted rather than tested.
+
+A `STARTD_CRON` job publishing `Memory` **does** override the startd's computed
+value, and the startd then carves dynamic slots against the published number.
+Measured: twelve jobs requesting 3 GB each ran concurrently on a machine whose
+`TotalMemory` is 26942 MB - 36 GB of nominal requests - with no claim refusals,
+no held jobs, and `Cpus` still decrementing correctly (16 to 4).
+
+Publish **measured headroom minus the soft floor**, so the advertisement agrees
+with what `START` will actually admit. Advertising raw `MemAvailable` instead
+would let a job match and then be refused by `FITS_MEM`, which is the silent
+failure this document is otherwise full of.
+
+This does not weaken any guard. Every memory term in `START` and `PREEMPT`
+reads `HostMemAvailMB` / `HostMemTotalMB` from the cron, never the slot ad, so
+eviction behaves exactly as before - it simply fires more often, because more
+work is admitted. Two side effects worth knowing: the value lands on **every**
+slot, so per-slot memory columns in `condor_status` stop being meaningful; and
+`SLOT_WEIGHT` must stay at its `Cpus` default or fair-share would be skewed.
+
+Disk is deliberately left on the ledger. It is the one resource with no
+graceful degradation.
+
+### The entry node keeps the ledger
+
+**This applies to workers only.** The entry node continues to advertise the
+reservation ledger, and the cron detects that itself - it publishes nothing when
+`SCHEDD` is in `DAEMON_LIST`, so one script stays correct fleet-wide and cannot
+be made wrong by deploying it to the wrong host.
+
+Three reasons, in order of weight:
+
+- Its failure is **not local**. If the schedd cannot fork shadows or fsync
+  `job_queue.log`, nothing anywhere in the pool runs. Every other setting on
+  that machine is deliberately conservative - half its cores, ~35% of its
+  memory - and opening memory admission to measured headroom would undo that on
+  the one host where it matters most.
+- The reservation is worth **more** there. What it protects is the schedd's own
+  shadows, one per running job pool-wide, and unlike a job's `request_memory`
+  that is not a guess.
+- Its `RESERVED_MEMORY` is large by design (10240 MB of 15732). A naive
+  `MemAvailable - 25%` would have advertised roughly **double** what the machine
+  is meant to offer. The floor is `max(soft floor, RESERVED_MEMORY)` partly to
+  make that safe, but on the schedd host the honest answer is not to publish at
+  all.
+
+So `condor_status` still shows nominal CPU capacity while `START` holds the
+truth - a machine can display free slots and still decline work. Diagnose with:
 
 ```
 condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 HostMemAvailMB HostDiskAvailMB
