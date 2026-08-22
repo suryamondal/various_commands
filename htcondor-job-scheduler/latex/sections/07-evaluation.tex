@@ -82,7 +82,7 @@ Read the three numbers together:
 
 \begin{keypoint}
 Only the saturation ceiling closes admission here. Without it the machine would
-advertise free capacity at load 19.2 and keep accepting --- owner protected,
+advertise free capacity at load 19.2 and keep accepting: owner protected,
 machine drowning. Slot accounting is request-based and structurally cannot see
 this. Only \file{/proc} can.
 \end{keypoint}
@@ -95,7 +95,7 @@ reattributes to non-Condor and can close admission for roughly 30 seconds
 afterwards.
 
 This is self-correcting, and it explains a \kn{START=false} that appears just as
-a machine goes quiet --- which otherwise looks like a policy bug at exactly the
+a machine goes quiet, which otherwise looks like a policy bug at exactly the
 moment you would least expect one.
 
 \subsection{The user PC, end to end}
@@ -130,8 +130,8 @@ warns.
 The retrieval matters as much as the placement. Output transfer is the direction
 that fails when a machine advertises an address its peer cannot reach
 (\S\ref{sec:vpn}), so eight sandboxes returning cleanly is the check that the
-interface pin was correct --- not the fact that the machine appeared in
-\kn{condor\_status}.
+interface pin was correct. The machine appearing in \kn{condor\_status} proves
+nothing.
 
 \subsection{Test methodology}
 
@@ -151,6 +151,6 @@ threshold crossing could be attributed to a known input rather than inferred
 afterwards.
 
 \textbf{Bound every generator with \kn{timeout}.} The deadline must be owned by
-something that survives the session dying --- a dropped ssh connection or a
-closed tmux window must not leave load or an allocation behind on a colleague's
+something that survives the session dying. A dropped ssh connection or a closed
+tmux window must not leave load or an allocation behind on a colleague's
 desktop.

@@ -58,7 +58,7 @@ condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 \
 \end{lstlisting}
 
 Every term in \kn{START} beside its threshold. A machine can show free slots and
-still decline work --- that is the design, not a fault.
+still decline work. That is the design, not a fault.
 
 \subsection{What did the startd actually decide?}
 
@@ -86,7 +86,7 @@ condor_config_val -v <KNOB>
 \begin{trap}
 Necessary but far from sufficient. Every defect in \S\ref{sec:silent}
 printed a correct value here. The \kn{-v} flag at least reveals \emph{which} file
-in \file{config.d} won, which is its real use --- precedence bites.
+in \file{config.d} won, which is its real use, because precedence bites.
 \end{trap}
 
 \subsection{Observing under load}
@@ -102,8 +102,9 @@ Do not use \kn{condor\_status} to observe a stress test: it reads the collector
 and is only as fresh as \kn{UPDATE\_INTERVAL}. It showed a frozen value for two
 and a half minutes while load was driven from 1 to 15.
 
-\kn{condor\_status -direct} is not an alternative on a worker --- it needs the
-pool signing key to verify the caller's token, and only the entry node has it.
+\kn{condor\_status -direct} is not an alternative on a worker, because it needs
+the pool signing key to verify the caller's token and only the entry node has
+it.
 \end{trap}
 
 \subsection{Load generation}
@@ -126,8 +127,8 @@ time.sleep(int(sys.argv[2]))
 ' "$MB" "$SECS"
 \end{lstlisting}
 
-An untouched allocation is virtual only, and \kn{MemAvailable} would not move ---
-the test would appear to fail while never having applied any pressure.
+An untouched allocation is virtual only, and \kn{MemAvailable} would not move,
+so the test would appear to fail while never having applied any pressure.
 
 \subsection{Testing eviction without endangering the machine}
 

@@ -22,8 +22,8 @@ Worker addresses & Advertised in each ClassAd & Condor dials them directly \\
 
 \subsection{Why names, not addresses}
 
-Condor routes by \textbf{advertised address} --- the sinful string each daemon
-puts in its ClassAd --- and never by resolving a name at connect time.
+Condor routes by the \textbf{advertised address}, the sinful string each daemon
+puts in its ClassAd. It never resolves a name at connect time.
 
 \begin{keypoint}
 A worker that changes IP address is reachable again at its next collector update.
@@ -37,16 +37,16 @@ Only the entry node must be findable by name, because every worker's
 \kn{condor\_submit -remote} and \kn{condor\_q -name} call
 \kn{get\_full\_hostname()}, which \textbf{rejects any name without a dot}.
 
-A pool of bare hostnames cannot use remote submission at all --- which, given
-that remote submission is the entire point of this design, makes the domain a
-hard requirement rather than a tidiness preference.
+A pool of bare hostnames cannot use remote submission at all. Since remote
+submission is the entire point of this design, the domain is a hard requirement
+rather than a tidiness preference.
 \kn{DEFAULT\_DOMAIN\_NAME = local} qualifies every name and stays resolvable
 through avahi via nsswitch (\kn{files mdns4\_minimal ... dns mdns4}).
 
 \subsection{A multi-homed entry node serving two unroutable networks}
 
 The pool spans two subnets that cannot route to each other, and machines move
-between them --- both networks have ethernet and wifi, and a machine parks
+between them. Both networks have ethernet and wifi, and a machine parks
 wherever it happens to be. Plugging in a cable is not an option.
 
 This works, using HTCondor's documented multi-homing support. An earlier revision
@@ -67,7 +67,7 @@ The result is a failure that mostly looks like success:
 \toprule
 \textbf{Direction} & \textbf{Initiator} & \textbf{Result} \\
 \midrule
-worker $\rightarrow$ collector (register, update) & Worker dials \kn{CONDOR\_HOST} & Works --- outbound \\
+worker $\rightarrow$ collector (register, update) & Worker dials \kn{CONDOR\_HOST} & Works, outbound \\
 shadow $\rightarrow$ startd (claim) & Entry node dials the worker & Works \\
 \textbf{starter $\rightarrow$ shadow (file transfer)} & \textbf{Worker dials the shadow's advertised address} & \textbf{Fails} \\
 \bottomrule
@@ -76,9 +76,9 @@ shadow $\rightarrow$ startd (claim) & Entry node dials the worker & Works \\
 \end{table}
 
 \begin{trap}
-The machine registers, jobs match, jobs \textbf{run to completion} --- and then
-the return channel fails, the work is discarded, the job is re-queued, and it
-loops, burning slots while \kn{condor\_status} shows a perfectly healthy machine.
+The machine registers, jobs match, and jobs \textbf{run to completion}. Then the
+return channel fails, the work is discarded, the job is re-queued, and it loops,
+burning slots while \kn{condor\_status} shows a perfectly healthy machine.
 \end{trap}
 
 Two obvious fixes do not work, both tested:
@@ -89,7 +89,7 @@ Two obvious fixes do not work, both tested:
         daemons can only advertise two IP addresses\ldots One is the public IP
         address and the other is the private IP address.''}
   \item \kn{TCP\_FORWARDING\_HOST} set to a hostname is resolved \textbf{locally
-        at startup} and baked in as a single IP --- and it silently flipped the
+        at startup} and baked in as a single IP. It also silently flipped the
         primary to the wifi address, which would have broken the wired machines
         instead.
 \end{itemize}
@@ -114,13 +114,13 @@ advertises:  <PRIMARY:9618?PrivAddr=<PRIVATE:9618>
 \end{lstlisting}
 
 The catch is that the choice is made by the \textbf{reader}. A hardcoded value on
-a worker is silently wrong the moment that machine moves --- which, in a fleet
-where machines move constantly, means it is wrong most of the time.
+a worker is silently wrong the moment that machine moves. In a fleet where
+machines move constantly, that means it is wrong most of the time.
 
 \subsubsection{Deriving it instead of configuring it}
 
 \kn{PRIVATE\_NETWORK\_NAME} defaults to the machine's own \kn{FULL\_HOSTNAME},
-which can never match another machine's --- so the default already means
+which can never match another machine's. The default therefore already means
 \emph{``use the primary address''}. Only machines on the private segment need to
 do anything, and they can work it out for themselves:
 
@@ -143,9 +143,9 @@ Wire it as an \kn{ExecStartPre} on \kn{condor.service} plus a NetworkManager
 dispatcher hook that restarts Condor \textbf{only when the derivation changes},
 so a routine lease renewal does not evict running jobs.
 
-\textbf{Fail safe:} any error --- name unresolvable, collector unreachable, ad
-unparseable --- must write \textbf{nothing}, never a stale name. Stale is
-precisely the failure this mechanism exists to prevent.
+\textbf{Fail safe:} any error, whether the name will not resolve, the collector
+is unreachable or the ad is unparseable, must write \textbf{nothing} rather than
+a stale name. Stale is precisely the failure this mechanism exists to prevent.
 
 The derivation needs root, since querying the collector uses the daemon token in
 \file{/etc/condor/tokens.d/}; running it as \kn{ExecStartPre} satisfies that.
@@ -162,7 +162,7 @@ changes at all. Two pieces were needed together:
         support, so a small service publishes \kn{avahi-publish -a} and
         republishes if the address changes. Publish with \kn{-R}: the real
         hostname already owns the reverse record, and a second one makes reverse
-        lookups ambiguous --- which breaks Condor's security layer, not DNS.
+        lookups ambiguous, and that breaks Condor's security layer, not DNS.
   \item \textbf{\kn{NETWORK\_HOSTNAME}}, fixing name lookups. Without it the
         schedd still advertises its hardware name and \kn{-remote <alias>} fails
         with ``Can't find address of schedd''. \kn{SCHEDD\_NAME} cannot
@@ -180,7 +180,7 @@ and advertise that single address.
 
 A machine's \textbf{own} hostname behaves differently: avahi answers
 per-interface, giving each querier the address it can actually reach. Verified
-from both sides --- the same real hostname resolved to the wired address from the
+from both sides: the same real hostname resolved to the wired address from the
 wired LAN and to the wifi address from wifi.
 
 So \kn{CONDOR\_HOST} names the machine. The cost is losing role indirection:
@@ -191,8 +191,8 @@ Correctness across networks beats the abstraction.
 \textbf{Retiring a name means finding every consumer, not every worker.} When
 the alias service was removed, the entry node and both workers were checked and
 all three already named the real host. The submit-only client was not checked,
-and it still named the alias --- so remote submission from that machine broke
-and stayed broken until it was next touched.
+and it still named the alias, so remote submission from that machine broke and
+stayed broken until it was next touched.
 \end{trap}
 
 That one failed loudly when finally exercised (\kn{Error: unknown host}), which
@@ -205,8 +205,8 @@ hosts that run no daemons.
 \label{sec:vpn}
 
 Condor ranks candidate addresses by publicness and advertises the most public as
-primary. Its private set is RFC1918 --- \kn{10/8}, \kn{172.16/12},
-\kn{192.168/16} --- so \textbf{tailscale's \kn{100.64/10} does not count as
+primary. Its private set is RFC1918, meaning \kn{10/8}, \kn{172.16/12} and
+\kn{192.168/16}, so \textbf{tailscale's \kn{100.64/10} does not count as
 private} and is a candidate to become the advertised address.
 
 Measured on the first user PC, which has three interfaces:
@@ -225,8 +225,8 @@ wifi & \kn{192.168.0.x/24} & yes \\
 \caption{A pool member carrying an interface the pool cannot use.}
 \end{table}
 
-The entry node has no tailscale interface and cannot reach that address at all
---- verified by connecting to each of the user PC's three addresses from it.
+The entry node has no tailscale interface and cannot reach that address at all,
+verified by connecting to each of the machine's three addresses from it.
 Advertising the overlay address would produce the return-channel failure above:
 the worker registers, jobs match, jobs run to completion, and then output
 transfer fails and the work is discarded while \kn{condor\_status} shows a
@@ -235,8 +235,8 @@ healthy machine.
 So \kn{NETWORK\_INTERFACE} is named explicitly on any machine carrying a VPN
 interface, choosing the segment the entry node's \emph{primary} address is on so
 that entry-to-worker takes the direct path. The cost is that the line is wrong
-if the machine's attachment ever changes --- accepted, because the alternative is
-trusting a ranking that demonstrably picks wrong.
+if the machine's attachment ever changes. That is accepted, because the
+alternative is trusting a ranking that demonstrably picks wrong.
 
 \subsubsection{The pin only constrains IPv4}
 
@@ -250,7 +250,7 @@ Verified afterwards on the slot ad, which is the only place this is visible:
 The primary is correct, but the \kn{addrs=} list still carries tailscale's
 global IPv6. The pool interfaces have only link-local \kn{fe80::} addresses,
 which Condor will not advertise, so the overlay's ULA was the only global IPv6
-available --- and it was selected independently of \kn{NETWORK\_INTERFACE}.
+available, and it was selected independently of \kn{NETWORK\_INTERFACE}.
 
 \begin{keypoint}
 Nothing has broken: the entry node advertises IPv4 only and dials IPv4. But a
@@ -268,8 +268,8 @@ change without invalidating every token. Tokens carry
 
 \begin{trap}
 \textbf{Changing \kn{UID\_DOMAIN} invalidates every token.} Old tokens still
-authenticate, but map to a different principal --- silently splitting fair-share
-accounting rather than failing visibly.
+authenticate, but they map to a different principal, silently splitting
+fair-share accounting rather than failing visibly.
 \end{trap}
 
 \subsection{Operational notes, learned the hard way}
@@ -291,5 +291,5 @@ accounting rather than failing visibly.
         sources of intermittent failures.
 \end{itemize}
 
-Vanilla-universe jobs need no worker-to-worker connectivity --- every
+Vanilla-universe jobs need no worker-to-worker connectivity, because every
 conversation is entry node to worker. The entry node is a star hub, not a router.

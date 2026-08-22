@@ -86,7 +86,7 @@ capacity, and the policy evicted it again because the pressure had not lifted.
 \subsection{How to test this safely}
 
 \begin{trap}
-Do not drive a machine to genuine memory pressure to test a threshold ---
+Do not drive a machine to genuine memory pressure to test a threshold,
 especially not one running a database. The OOM killer does not choose politely,
 and there is no equivalent of \kn{renice} for memory.
 \end{trap}
@@ -109,6 +109,6 @@ window.
 \begin{trap}
 An early CPU load generator tested its own deadline by calling \kn{date +\%s}
 each iteration. The fork per iteration dominated the loop, and fourteen workers
-produced a load of about 7 --- below the threshold. It looked exactly like a
+produced a load of about 7, below the threshold. It looked exactly like a
 policy failure. The instrument was broken, not the system.
 \end{trap}

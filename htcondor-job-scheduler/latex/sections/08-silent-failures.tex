@@ -65,7 +65,7 @@ policy does not fail; it declines, forever, quietly.
 \begin{trap}
 \kn{UNDEFINED} is \textbf{worse than false}. A false \kn{START} parks the slot in
 \st{Owner} state, which is visible in one column of \kn{condor\_status}. Undefined
-leaves it displaying \st{Unclaimed/Idle} --- the exact appearance of a healthy
+leaves it displaying \st{Unclaimed/Idle}, the exact appearance of a healthy
 machine waiting for work.
 \end{trap}
 
@@ -77,7 +77,7 @@ diagnosis.
 
 \textbf{Declining work is a legitimate state.} The whole point of the owner
 policy is that machines refuse jobs. There is therefore no threshold of refusal
-at which the system concludes something is wrong --- refusing everything forever
+at which the system concludes something is wrong. Refusing everything forever
 is, to Condor, a machine whose owner is very busy.
 
 \subsection{The verification discipline that follows}
@@ -107,8 +107,8 @@ specific machine.
 
 \subsubsection{Apply real load}
 
-Suspension, eviction and admission closure cannot be verified by inspection ---
-all three failed silently under inspection and were found only under load. Raise
+Suspension, eviction and admission closure cannot be verified by inspection.
+All three failed silently under inspection and were found only under load. Raise
 load in stages so a crossing can be attributed to a known input, and bound every
 generator with \kn{timeout} so nothing survives a dropped session.
 
