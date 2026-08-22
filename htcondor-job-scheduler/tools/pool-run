@@ -1,10 +1,10 @@
 #!/bin/sh
-# Submit, wait, retrieve, release. The whole lifecycle in one command.
+# Submit, retrieve each proc as it finishes, release its spool. One command.
 #
 # WHY THIS EXISTS
 # Three cleanups happen in this pool and only one is automatic:
 #
-#   worker scratch   AUTOMATIC. The starter removes the sandbox the moment
+#   worker scratch   AUTOMATIC. The starter removes the sandbox as soon as
 #                    output transfer completes. Orphans from crashed starters
 #                    are reaped by condor_preen (hourly here, not the 24h
 #                    default).
@@ -12,11 +12,22 @@
 #                    Nothing pushes it to you; condor_transfer_data pulls it.
 #   entry node spool MANUAL. A completed spooled job keeps its spool directory
 #                    for LeaveJobInQueue's window - 864000s, TEN DAYS, by
-#                    default - even after you have retrieved the output.
+#                    default - even after the output has been retrieved.
 #
 # That last one is the trap. SPOOL shares a volume with job_queue.log, and a
 # full SPOOL stops the schedd writing its queue, which stops the whole pool.
-# Submitting and walking away is what fills it.
+#
+# PER-PROC, NOT PER-CLUSTER
+# Output is collected proc by proc, the moment each one finishes. The first
+# version waited for the WHOLE cluster before transferring anything, which is
+# wrong here: suspension is routine, so one job frozen behind an owner's
+# workload held up every finished job's output. Measured on a 4-job cluster -
+# three finished in 10s and their output sat unread for four minutes waiting on
+# the fourth. At 100 jobs that behaviour is untenable.
+#
+# Removing a proc after transfer is also what tracks progress: once retrieved
+# and released it leaves the queue, so the queue itself is the to-do list and
+# no bookkeeping is needed.
 #
 # Usage: pool-run <submit-file> [entry-node]
 set -e
@@ -25,44 +36,40 @@ SUB=${1:?usage: pool-run <submit-file> [entry-node]}
 ENTRY=${2:-$(condor_config_val CONDOR_HOST 2>/dev/null)}
 [ -n "$ENTRY" ] || { echo "no entry node: pass one or set CONDOR_HOST" >&2; exit 2; }
 
-# -terse prints "cluster.proc - cluster.proc"; take the cluster.
 CLUSTER=$(condor_submit -remote "$ENTRY" -spool -terse "$SUB" | head -1 | cut -d. -f1)
 [ -n "$CLUSTER" ] || { echo "submit failed" >&2; exit 1; }
-echo "cluster $CLUSTER submitted to $ENTRY"
 
-# Wait for every proc to reach a terminal state. 4=Completed, 5=Held.
-# Poll, do not sleep blindly: jobs here are evicted and re-run as a matter of
-# course, so elapsed time says nothing about progress.
+TOTAL=$(condor_q -name "$ENTRY" "$CLUSTER" -af ProcId 2>/dev/null | wc -l)
+echo "cluster $CLUSTER submitted to $ENTRY ($TOTAL procs)"
+
+GOT=0
 while :; do
-    ST=$(condor_q -name "$ENTRY" "$CLUSTER" -af JobStatus 2>/dev/null | sort -u | tr '\n' ' ')
-    [ -n "$ST" ] || { echo "cluster $CLUSTER left the queue before retrieval"; exit 1; }
+    LIST=$(condor_q -name "$ENTRY" "$CLUSTER" -af ProcId JobStatus HoldReasonCode 2>/dev/null)
+    [ -n "$LIST" ] || break
 
-    # A job is briefly HELD during -spool submission: hold code 16, "Spooling
-    # input data files". That is normal and clears itself. Treating any status
-    # 5 as fatal aborts every submission on its first poll - which is exactly
-    # what the first version of this script did.
-    BAD=$(condor_q -name "$ENTRY" "$CLUSTER" -af ProcId JobStatus HoldReasonCode 2>/dev/null |
-          awk '$2 == 5 && $3 != 16 { print $1; exit }')
-    if [ -n "$BAD" ]; then
+    # Harvest every proc that has finished, right now.
+    for P in $(printf '%s\n' "$LIST" | awk '$2 == 4 { print $1 }'); do
+        if condor_transfer_data -name "$ENTRY" "$CLUSTER.$P" >/dev/null 2>&1; then
+            condor_rm -name "$ENTRY" "$CLUSTER.$P" >/dev/null 2>&1 || true
+            GOT=$((GOT + 1))
+            printf '\r  retrieved %d/%d' "$GOT" "$TOTAL"
+        fi
+    done
+
+    # A -spool submission is briefly HELD with code 16, "Spooling input data
+    # files". That is normal and clears itself; only another code is a fault.
+    HELD=$(printf '%s\n' "$LIST" | awk '$2 == 5 && $3 != 16 { print $1 }' | tr '\n' ' ')
+    LIVE=$(printf '%s\n' "$LIST" | awk '$2 != 5 || $3 == 16' | wc -l)
+
+    if [ "$LIVE" -eq 0 ] && [ -n "$HELD" ]; then
         echo ""
-        echo "proc $BAD is HELD for a real reason - not retrieving. Diagnose with:"
+        echo "procs held and left in the queue: $HELD"
         echo "  condor_q -name $ENTRY $CLUSTER -af ProcId HoldReasonCode HoldReason"
         exit 1
     fi
 
-    case "$ST" in
-        "4 ") echo ""; echo "all procs completed"; break ;;
-        *)    printf '\r  waiting, states: %s' "$ST" ;;
-    esac
-    sleep 10
+    sleep 5
 done
 
-echo "retrieving output"
-condor_transfer_data -name "$ENTRY" "$CLUSTER" >/dev/null
-
-# Only now release the spool. condor_rm on a COMPLETED job discards nothing -
-# the work is done and the output is already on this machine.
-echo "releasing spool on the entry node"
-condor_rm -name "$ENTRY" "$CLUSTER" >/dev/null 2>&1 || true
-
+printf '\r  retrieved %d/%d\n' "$GOT" "$TOTAL"
 echo "done: cluster $CLUSTER output is local, spool released"

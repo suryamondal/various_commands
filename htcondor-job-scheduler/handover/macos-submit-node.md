@@ -92,13 +92,17 @@ ssh <ENTRY_NODE> "id <USER> 2>&1"
 
 ### A2. Issue a *user* token
 
-On the entry node:
+Run these on the entry node, exactly as written. The second line creates the
+token file so that only you can read it.
 
 ```
-sudo condor_token_create -identity <USER>@<POOL_DOMAIN>
+umask 077
+sudo condor_token_create -identity <USER>@<POOL_DOMAIN> > ~/handover.token
+ls -l ~/handover.token
 ```
 
-That prints the token to stdout. Capture it to a file with `umask 077`.
+The `ls` should show `-rw-------`, meaning nobody else on that machine can read
+it. If it shows anything else, delete the file and run the three lines again.
 
 > **User token, not a daemon token.** A daemon token (`condor@…`) would let that
 > laptop act as pool infrastructure. It only needs to submit.
@@ -109,8 +113,17 @@ The token is a **bearer credential with no machine binding**: anything that can
 read the file can act as that identity. It is not tied to the laptop, so a copy
 left in `~/` or in a chat log is a live key.
 
-Hand it over out of band, then `shred -u` every intermediate copy on every
-machine that touched it, including your own.
+Send it by a private channel — not email, not a group chat. Then delete every
+copy you made. `shred` overwrites the file before deleting it, so it cannot be
+recovered:
+
+```
+shred -u ~/handover.token
+ls -l ~/handover.token
+```
+
+The `ls` should say `No such file or directory`. Run those two lines on **every**
+machine the file passed through, including your own laptop.
 
 ### A4. Tell them the retrieval rule
 
@@ -154,10 +167,17 @@ ls -l condor*.tar.gz
 
 > **Version skew.** The pool runs **23.4.0**. This script fetches current
 > stable, which may now be a later series. HTCondor tolerates some skew, but a
-> client much newer than the schedd is asking for trouble. Run the script with
-> `--help` to see whether it can pin a release series; if it cannot, download
-> the matching 23.x macOS tarball directly from the HTCondor release archive
-> instead. Prefer a client at or below the pool's version.
+> client much newer than the schedd is asking for trouble.
+>
+> To see whether the download script can pin a specific release series, run:
+>
+> ```
+> curl -fsSL https://get.htcondor.org | /bin/bash -s -- --help
+> ```
+>
+> If it offers a version or channel option, use it to request 23.x. If it does
+> not, download the matching 23.x macOS tarball by hand from the HTCondor
+> release archive instead. Prefer a client at or below the pool's version.
 
 <a name="b1a"></a>
 #### B1a. Apple Silicon
@@ -231,12 +251,22 @@ storage here, so setting it pool-wide would silently break every job.
 
 ### B5. Install the token
 
+Assuming the file you were given is in your `Downloads` folder and is called
+`handover.token`, run all five lines:
+
 ```
 mkdir -p ~/.condor/tokens.d
 chmod 700 ~/.condor/tokens.d
-# move the token file you were given into place, then:
-chmod 600 ~/.condor/tokens.d/*
+mv ~/Downloads/handover.token ~/.condor/tokens.d/office-pool
+chmod 600 ~/.condor/tokens.d/office-pool
+ls -l ~/.condor/tokens.d/office-pool
 ```
+
+If the file is somewhere else or has a different name, change the `mv` line to
+match. The name it ends up with — `office-pool` — does not matter to Condor; any
+name works, as long as it is inside that folder.
+
+The `ls` should show `-rw-------`. If it does not, run the `chmod 600` line again.
 
 ### B6. Make the tools available at every login
 
@@ -303,8 +333,21 @@ queue 2
 EOF
 
 condor_submit -remote <ENTRY_NODE> -spool hello.sub
+```
+
+Now watch the queue. Run this line again every few seconds:
+
+```
 condor_q -name <ENTRY_NODE>
-# wait until JobStatus is 4 (Completed), then:
+```
+
+Each job shows a status letter. `I` means idle (waiting for a machine), `R`
+means running, `C` means completed. When both jobs show `C`, or the queue prints
+`0 jobs`, they are finished — usually well under a minute.
+
+Then fetch the output and look at it:
+
+```
 condor_transfer_data -name <ENTRY_NODE> -all
 cat out.*
 ```
@@ -315,17 +358,37 @@ Two files naming two different pool machines means it works end to end.
 
 ## 4. Daily use
 
+Four steps every time. Step 1 prints a cluster number, like
+`1 job(s) submitted to cluster 42`. Use that number — `42` in this example — in
+steps 3 and 4.
+
 ```
 condor_submit -remote <ENTRY_NODE> -spool myjob.sub
-condor_q      -name   <ENTRY_NODE>
-condor_transfer_data -name <ENTRY_NODE> -all
+```
+
+```
+condor_q -name <ENTRY_NODE>
+```
+
+```
+condor_transfer_data -name <ENTRY_NODE> 42
+```
+
+```
+condor_rm -name <ENTRY_NODE> 42
 ```
 
 `-spool` sends the input files with the job, so the laptop does not need to stay
 reachable — or awake — while the job runs.
 
-**Always retrieve.** Output sits in the entry node's spool until fetched, and
-that volume also holds the schedd's queue. See A4.
+**Step 3 is not optional.** Output sits in the entry node's spool until you
+fetch it. Nothing sends it to you.
+
+**Step 4 is not optional either, and it deletes nothing of yours.** The job has
+already finished and its output is already on your laptop by then; `condor_rm`
+only frees the disk the job was still holding on the entry node. Skip it and
+that space stays occupied for ten days. See A4 for why that matters to everyone
+else.
 
 ### Writing jobs for this pool
 
@@ -400,10 +463,14 @@ working as designed — its owner is using it.
 
 Complete removal, no root, nothing left behind:
 
+Run all four lines. The third deletes the startup line from your shell
+configuration; the fourth confirms it is gone and should print nothing.
+
 ```
 rm -rf ~/condor ~/.condor ~/condor-hello
-rm -f  ~/condor*.tar.gz
-# remove the '. ~/condor/condor.sh' line from ~/.zshrc
+rm -f ~/condor*.tar.gz
+sed -i '' '/condor\/condor.sh/d' ~/.zshrc
+grep condor ~/.zshrc
 ```
 
 Then tell the operator, so the token can be treated as revoked and the entry

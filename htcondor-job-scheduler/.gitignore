@@ -14,3 +14,6 @@ wifi.txt
 # LaTeX build products. The sources in latex/ are tracked; the output is not.
 latex/build/
 *.pdf
+
+# Job scratch and test runs. Working area, never tracked.
+run/
