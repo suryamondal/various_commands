@@ -14,9 +14,13 @@ Type=simple
 User=condor
 Group=condor
 StateDirectory=pool-web
+# The database lives OUTSIDE the served tree. It was previously beside
+# index.html, which meant the whole sample history was downloadable over HTTP
+# by anyone who guessed the filename. Only live.json and the plots belong in
+# www/.
 ExecStart=/usr/local/bin/pool-sample \
     --db /var/lib/pool-web/pool.db \
-    --live /var/lib/pool-web/live.json \
+    --live /var/lib/pool-web/www/condor-status/live.json \
     --interval 5 --retain-hours 48
 Restart=always
 RestartSec=15

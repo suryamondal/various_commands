@@ -5,6 +5,15 @@
 # files. apache2's binary is present on that machine but has no unit and no
 # docroot, so it is a leftover rather than something to build on.
 #
+# PORT 80, so the URL is http://<entry-node>.local/condor-status/ with no port
+# to remember. Binding below 1024 normally needs root; AmbientCapabilities grants
+# exactly CAP_NET_BIND_SERVICE to an otherwise unprivileged process, which is a
+# far smaller grant than running the server as root.
+#
+# The page sits at /condor-status/ by serving www/ and putting the files in a
+# condor-status subdirectory, rather than by rewriting paths. python3's
+# http.server has no rewrite support, and the directory layout does the job.
+#
 # BINDING: 0.0.0.0 serves both pool subnets. The pool is on private networks,
 # but this does expose a port on the entry node. Bind a single address instead
 # if that is not wanted.
@@ -20,8 +29,10 @@ Type=simple
 User=condor
 Group=condor
 StateDirectory=pool-web
-WorkingDirectory=/var/lib/pool-web
-ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /var/lib/pool-web
+WorkingDirectory=/var/lib/pool-web/www
+ExecStart=/usr/bin/python3 -m http.server 80 --bind 0.0.0.0 --directory /var/lib/pool-web/www
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 Restart=always
 RestartSec=10
 Nice=10
@@ -30,7 +41,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadOnlyPaths=/var/lib/pool-web
+ReadOnlyPaths=/var/lib/pool-web/www
 
 [Install]
 WantedBy=multi-user.target

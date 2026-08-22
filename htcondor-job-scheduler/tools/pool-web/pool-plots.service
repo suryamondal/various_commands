@@ -15,7 +15,7 @@ Group=condor
 StateDirectory=pool-web
 ExecStart=/usr/local/bin/pool-plots \
     --db /var/lib/pool-web/pool.db \
-    --out /var/lib/pool-web --auto
+    --out /var/lib/pool-web/www/condor-status --auto
 Nice=15
 # Plotting is the only CPU this dashboard spends. On a shared desktop that
 # should never compete with the owner or with jobs.
