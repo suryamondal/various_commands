@@ -17,10 +17,16 @@
   h1 { font-size:1.15rem; margin:0 0 .2rem; }
   .sub { color:var(--muted); font-size:.85rem; margin-bottom:1.4rem; }
   table { border-collapse:collapse; width:100%; font-size:.88rem; }
-  th,td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--rule); }
+  th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--rule);
+          white-space:nowrap; }
+  td:first-child, th:first-child { padding-left:0; }
   th { font-weight:600; font-size:.78rem; text-transform:uppercase;
        letter-spacing:.03em; color:var(--muted); }
-  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  /* Must match th as well as td: with td.num the body cells right-align while
+     the headers stay left, so every numeric column has its label at one end
+     and its value at the other. */
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  th.num { padding-right:.5rem; }
   .bar { display:block; height:.62rem; background:var(--barbg); border-radius:2px;
          overflow:hidden; min-width:70px; }
   .bar > i { display:block; height:100%; background:var(--bar); }
@@ -29,6 +35,13 @@
          border-radius:3px; padding:0 .3rem; margin-left:.35rem; }
   .note { color:var(--muted); font-size:.82rem; margin:.8rem 0 2rem; }
   h2 { font-size:.95rem; margin:2.2rem 0 .5rem; }
+  .tabs { display:flex; gap:.4rem; margin:.2rem 0 .7rem; flex-wrap:wrap; }
+  .tabs button { font:inherit; font-size:.82rem; padding:.28rem .8rem; cursor:pointer;
+                 color:var(--fg); background:transparent; border:1px solid var(--rule);
+                 border-radius:3px; }
+  .tabs button:hover { border-color:var(--muted); }
+  .tabs button[aria-selected="true"] { background:var(--bar); border-color:var(--bar);
+                                       color:#fff; font-weight:600; }
   img { width:100%; height:auto; border:1px solid var(--rule); border-radius:3px; }
   .stamp { color:var(--muted); font-size:.75rem; margin-top:.25rem; }
 </style>
@@ -39,8 +52,7 @@
 <table>
   <thead><tr>
     <th>machine</th><th>state</th><th>cores</th><th class="num">load</th>
-    <th class="num">owner</th><th>memory offered</th><th class="num">free</th>
-    <th class="num">cpu&nbsp;psi</th><th>start</th>
+    <th>memory offered</th><th class="num">free</th><th>start</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -67,16 +79,17 @@
   from a running total.
 </p>
 
-<h2>last 30 minutes</h2>
-<img src="pool-30min.svg" alt="last 30 minutes">
-<h2>last 6 hours</h2>
-<img src="pool-6h.svg" alt="last 6 hours">
-<h2>last 48 hours</h2>
-<img src="pool-48h.svg" alt="last 48 hours">
+<h2>history</h2>
+<div class="tabs" id="tabs">
+  <button data-w="30min">30 minutes</button>
+  <button data-w="6h">6 hours</button>
+  <button data-w="48h">48 hours</button>
+</div>
+<img id="plot" alt="pool history">
 <div class="stamp">
-  Plots are regenerated on a fixed schedule and served as static files. They
-  update when you reload the page, not while you watch. Only the table above is
-  live.
+  Plots are regenerated on a fixed schedule and served as static files, so they
+  update when you reload rather than while you watch. Only one is fetched, when
+  you pick it. The table above is the live part.
 </div>
 
 <script>
@@ -103,11 +116,9 @@ async function tick() {
         '<td>' + bar(m.cpus_total ? used / m.cpus_total : 0) +
           '<small>' + used.toFixed(0) + '/' + m.cpus_total.toFixed(0) + '</small></td>' +
         '<td class="num">' + m.load.toFixed(2) + '</td>' +
-        '<td class="num">' + (m.load - m.condor_load).toFixed(2) + '</td>' +
         '<td>' + bar(memUsed) +
           '<small>' + (m.mem_adv / 1024).toFixed(1) + ' GB offered</small></td>' +
         '<td class="num">' + (m.mem_avail / 1024).toFixed(1) + ' GB</td>' +
-        '<td class="num">' + m.cpu_psi.toFixed(1) + '</td>' +
         '<td>' + (m.start ? 'yes' : '<span class="no">no</span>') + '</td>' +
         '</tr>';
     }).join('');
@@ -126,6 +137,25 @@ async function tick() {
     document.getElementById('sub').textContent = 'live data unavailable';
   }
 }
+// One plot at a time. The image is only fetched when its tab is chosen, so
+// landing on the page costs one SVG rather than three.
+const plot = document.getElementById('plot');
+function show(w) {
+  document.querySelectorAll('#tabs button').forEach(function (b) {
+    b.setAttribute('aria-selected', b.dataset.w === w ? 'true' : 'false');
+  });
+  // Cache-bust so a reload picks up a regenerated file rather than a stale one.
+  plot.src = 'pool-' + w + '.svg?t=' + Date.now();
+  plot.alt = 'pool history, last ' + w;
+  try { localStorage.setItem('poolWindow', w); } catch (e) { /* private mode */ }
+}
+document.getElementById('tabs').addEventListener('click', function (e) {
+  if (e.target.dataset && e.target.dataset.w) { show(e.target.dataset.w); }
+});
+let start = '6h';
+try { start = localStorage.getItem('poolWindow') || '6h'; } catch (e) { /* ignore */ }
+show(start);
+
 tick();
 setInterval(tick, 5000);
 </script>

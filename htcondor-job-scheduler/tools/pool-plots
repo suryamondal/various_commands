@@ -105,8 +105,8 @@ def render(db, out, minutes, name, title, fmt="svg"):
     if not per:
         return None
     n = len(per) + (2 if users else 1)
-    fig, axes = plt.subplots(n, 1, figsize=(11, 2.0 * n + 1.0), sharex=True,
-                             facecolor=BG, gridspec_kw=dict(hspace=0.32))
+    fig, axes = plt.subplots(n, 1, figsize=(11, 1.55 * n + 0.4), sharex=True,
+                             facecolor=BG, gridspec_kw=dict(hspace=0.28))
     if n == 1:
         axes = [axes]
 
@@ -118,6 +118,13 @@ def render(db, out, minutes, name, title, fmt="svg"):
         ax.legend(loc="upper left", fontsize=8, frameon=False, ncol=2)
     ax.set_ylabel("jobs", fontsize=9)
     ax.set_title(title, fontsize=11, color=FG, loc="left", pad=8)
+    # The generation stamp goes in the title row, NOT as figure text.
+    # fig.text() at the bottom-right corner is an artist at the extreme edge,
+    # and bbox_inches="tight" must then include everything out to it, which
+    # turns the gap between the last panel and the corner into whitespace on
+    # both the right and the bottom.
+    ax.set_title(time.strftime("generated %Y-%m-%d %H:%M:%S"),
+                 fontsize=7, color="#9AA0A6", loc="right", pad=8)
 
     rest = axes[1:]
     if users:
@@ -181,8 +188,6 @@ def render(db, out, minutes, name, title, fmt="svg"):
         datefmt = "%d %b %H:%M"
     axes[-1].xaxis.set_major_formatter(mdates.DateFormatter(datefmt))
     fig.autofmt_xdate(rotation=0, ha="center")
-    fig.text(0.99, 0.005, "generated %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
-             ha="right", fontsize=7, color="#9AA0A6")
 
     os.makedirs(out, exist_ok=True)
     final = os.path.join(out, "pool-%s.%s" % (name, fmt))
@@ -191,7 +196,8 @@ def render(db, out, minutes, name, title, fmt="svg"):
     # and prints properly, and matplotlib writes it faster than the raster.
     # The format must be passed explicitly because the temp name has no
     # recognised extension.
-    fig.savefig(tmp, format=fmt, dpi=110, bbox_inches="tight", facecolor=BG)
+    fig.savefig(tmp, format=fmt, dpi=110, bbox_inches="tight",
+                pad_inches=0.08, facecolor=BG)
     plt.close(fig)
     os.replace(tmp, final)
     return final
