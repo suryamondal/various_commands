@@ -1,0 +1,131 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>pool status</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1a1a1a; --muted:#6b7280; --rule:#d8dce0;
+    --ok:#1f4e79; --warn:#b5761f; --bar:#1f4e79; --barbg:#eceff1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --fg:#e6e8ea; --muted:#9aa0a6; --rule:#2a2f36;
+            --barbg:#232830; }
+  }
+  body { background:var(--bg); color:var(--fg); margin:0 auto; max-width:1100px;
+         padding:1.5rem 1rem 4rem;
+         font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  h1 { font-size:1.15rem; margin:0 0 .2rem; }
+  .sub { color:var(--muted); font-size:.85rem; margin-bottom:1.4rem; }
+  table { border-collapse:collapse; width:100%; font-size:.88rem; }
+  th,td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--rule); }
+  th { font-weight:600; font-size:.78rem; text-transform:uppercase;
+       letter-spacing:.03em; color:var(--muted); }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .bar { display:block; height:.62rem; background:var(--barbg); border-radius:2px;
+         overflow:hidden; min-width:70px; }
+  .bar > i { display:block; height:100%; background:var(--bar); }
+  .no  { color:var(--warn); font-weight:600; }
+  .tag { font-size:.7rem; color:var(--muted); border:1px solid var(--rule);
+         border-radius:3px; padding:0 .3rem; margin-left:.35rem; }
+  .note { color:var(--muted); font-size:.82rem; margin:.8rem 0 2rem; }
+  h2 { font-size:.95rem; margin:2.2rem 0 .5rem; }
+  img { width:100%; height:auto; border:1px solid var(--rule); border-radius:3px; }
+  .stamp { color:var(--muted); font-size:.75rem; margin-top:.25rem; }
+</style>
+
+<h1>pool status</h1>
+<div class="sub" id="sub">loading&hellip;</div>
+
+<table>
+  <thead><tr>
+    <th>machine</th><th>state</th><th>cores</th><th class="num">load</th>
+    <th class="num">owner</th><th>memory offered</th><th class="num">free</th>
+    <th class="num">cpu&nbsp;psi</th><th>start</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<p class="note">
+  <strong>start = no</strong> means the machine is declining work by policy, not
+  that it is broken. Admission here is gated on measured load, memory and
+  pressure, so a machine can show free cores and still refuse jobs while its
+  owner is using it. <span class="tag">ledger</span> marks a machine that
+  advertises reserved capacity rather than measured headroom.
+</p>
+
+<h2>who is using the pool</h2>
+<table>
+  <thead><tr>
+    <th>user</th><th class="num">running</th><th class="num">idle</th>
+    <th class="num">held</th><th class="num">cores</th><th class="num">memory</th>
+  </tr></thead>
+  <tbody id="users"></tbody>
+</table>
+<p class="note">
+  Current demand per user. The stacked panel in each plot below shows the same
+  thing over time, so who consumed how much is read off the history rather than
+  from a running total.
+</p>
+
+<h2>last 30 minutes</h2>
+<img src="pool-30min.svg" alt="last 30 minutes">
+<h2>last 6 hours</h2>
+<img src="pool-6h.svg" alt="last 6 hours">
+<h2>last 48 hours</h2>
+<img src="pool-48h.svg" alt="last 48 hours">
+<div class="stamp">
+  Plots are regenerated on a fixed schedule and served as static files. They
+  update when you reload the page, not while you watch. Only the table above is
+  live.
+</div>
+
+<script>
+// Only this table polls. The plots are static files on disk, so a viewer never
+// causes a query against the collector no matter how many tabs are open.
+function bar(frac) {
+  const p = Math.max(0, Math.min(1, frac)) * 100;
+  return '<span class="bar"><i style="width:' + p.toFixed(0) + '%"></i></span>';
+}
+async function tick() {
+  try {
+    const r = await fetch('live.json?t=' + Date.now(), {cache: 'no-store'});
+    const d = await r.json();
+    const q = d.queue;
+    document.getElementById('sub').textContent =
+      d.pool + '  ·  running ' + q.running + ', idle ' + q.idle +
+      ', held ' + q.held + '  ·  sampled ' + d.generated;
+    document.getElementById('rows').innerHTML = d.machines.map(function (m) {
+      const used = Math.max(0, m.cpus_total - m.cpus_free);
+      const memUsed = m.mem_total ? 1 - (m.mem_adv / m.mem_total) : 0;
+      return '<tr>' +
+        '<td>' + m.machine + (m.ledger ? '<span class="tag">ledger</span>' : '') + '</td>' +
+        '<td>' + m.state + '</td>' +
+        '<td>' + bar(m.cpus_total ? used / m.cpus_total : 0) +
+          '<small>' + used.toFixed(0) + '/' + m.cpus_total.toFixed(0) + '</small></td>' +
+        '<td class="num">' + m.load.toFixed(2) + '</td>' +
+        '<td class="num">' + (m.load - m.condor_load).toFixed(2) + '</td>' +
+        '<td>' + bar(memUsed) +
+          '<small>' + (m.mem_adv / 1024).toFixed(1) + ' GB offered</small></td>' +
+        '<td class="num">' + (m.mem_avail / 1024).toFixed(1) + ' GB</td>' +
+        '<td class="num">' + m.cpu_psi.toFixed(1) + '</td>' +
+        '<td>' + (m.start ? 'yes' : '<span class="no">no</span>') + '</td>' +
+        '</tr>';
+    }).join('');
+
+    document.getElementById('users').innerHTML = (d.users || []).map(function (u) {
+      return '<tr>' +
+        '<td>' + u.user + '</td>' +
+        '<td class="num">' + (u.running || 0) + '</td>' +
+        '<td class="num">' + (u.idle || 0) + '</td>' +
+        '<td class="num">' + (u.held || 0) + '</td>' +
+        '<td class="num">' + (u.req_cpus || 0).toFixed(0) + '</td>' +
+        '<td class="num">' + ((u.req_mem_mb || 0) / 1024).toFixed(1) + ' GB</td>' +
+        '</tr>';
+    }).join('');
+  } catch (e) {
+    document.getElementById('sub').textContent = 'live data unavailable';
+  }
+}
+tick();
+setInterval(tick, 5000);
+</script>

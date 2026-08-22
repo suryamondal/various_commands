@@ -1,0 +1,12 @@
+# Install: /etc/systemd/system/pool-plots.timer
+[Unit]
+Description=Render pool history plots periodically
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=30
+AccuracySec=5
+Unit=pool-plots.service
+
+[Install]
+WantedBy=timers.target

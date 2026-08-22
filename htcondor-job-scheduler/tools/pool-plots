@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Render pool history to PNG from the sampler's database.
+
+Run on a timer, never on request. A page refresh serves whatever is on disk, so
+the cost of a viewer is one static file fetch and the collector is never touched.
+
+Each window gets its own file and its own cadence. There is no point
+regenerating the 48h plot every thirty seconds, and no point making a viewer
+wait while it happens.
+
+The panels are chosen for this pool specifically. Load alone does not explain
+why a machine is idle here, because admission is gated on measured state: a
+machine can sit Unclaimed with free cores because START is false. So periods
+where START was false are shaded, which turns "declining by policy" into
+something visible rather than something inferred from a gap.
+
+Images are written to a temp file and renamed, so a fetch during a write never
+returns a truncated PNG.
+
+Usage: pool-plots --db PATH --out DIR --minutes 30 --name 30min
+"""
+import argparse
+import os
+import sqlite3
+import time
+
+import matplotlib
+matplotlib.use("Agg")            # no display, no interactive backend
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
+
+BG, FG, GRID = "#FFFFFF", "#1A1A1A", "#D8DCE0"
+C_LOAD, C_OWNER, C_MEM = "#1F4E79", "#B5761F", "#4C8C4A"
+C_RUN, C_IDLE, C_DECLINE = "#1F4E79", "#9AA0A6", "#F2D8D8"
+# Categorical, for stacking one band per user. Chosen to stay distinguishable
+# in greyscale as well, since these plots get printed and pasted into mail.
+C_USERS = ["#1F4E79", "#B5761F", "#4C8C4A", "#8B2E2E",
+           "#5B4B8A", "#2E7D8B", "#8A6D3B", "#6B7280"]
+
+
+# SVG size grows with the number of drawn points, unlike PNG. Measured on this
+# figure: at 400 points/machine SVG is 0.81x the PNG, at 1500 it is 1.17x, at
+# 4000 it is 1.89x. 1500 keeps vector output roughly the size of the raster it
+# replaces while staying well above screen resolution for a two-day window.
+def decimate(rows, target=1500):
+    """Long windows hold tens of thousands of samples. Drawing them all costs
+    time and file size and shows nothing extra at screen resolution."""
+    if len(rows) <= target:
+        return rows
+    step = len(rows) // target + 1
+    return rows[::step]
+
+
+def load(db, minutes):
+    cut = int(time.time()) - minutes * 60
+    con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=20)
+    machines = [r[0] for r in con.execute(
+        "SELECT DISTINCT machine FROM samples WHERE ts>=? ORDER BY machine", (cut,))]
+    per = {}
+    for m in machines:
+        rows = con.execute(
+            "SELECT ts,load,condor_load,mem_adv,mem_avail,start,cpus_total,mem_total "
+            "FROM samples WHERE machine=? AND ts>=? ORDER BY ts", (m, cut)).fetchall()
+        per[m] = decimate(rows)
+    q = decimate(con.execute(
+        "SELECT ts,running,idle,held FROM queue WHERE ts>=? ORDER BY ts", (cut,)).fetchall())
+
+    # Per-user consumption over time. Cores held rather than job count, because
+    # one job holding eight cores and eight jobs holding one are the same claim
+    # on the pool and should read the same on the plot.
+    users = {}
+    try:
+        rows = con.execute(
+            "SELECT ts,user,req_cpus FROM user_jobs WHERE ts>=? ORDER BY ts", (cut,)).fetchall()
+    except sqlite3.OperationalError:
+        rows = []                       # table predates this version of the schema
+    stamps = sorted({r[0] for r in rows})
+    stamps = decimate([(t,) for t in stamps])
+    keep = {t[0] for t in stamps}
+    for ts_, u, c in rows:
+        if ts_ in keep:
+            users.setdefault(u, {})[ts_] = c
+    con.close()
+    return per, q, users, [t[0] for t in stamps]
+
+
+def shade_declines(ax, rows):
+    """Shade contiguous spans where START was false."""
+    span = None
+    for r in rows:
+        t, start = datetime.fromtimestamp(r[0]), r[5]
+        if not start and span is None:
+            span = t
+        elif start and span is not None:
+            ax.axvspan(span, t, color=C_DECLINE, zorder=0, linewidth=0)
+            span = None
+    if span is not None and rows:
+        ax.axvspan(span, datetime.fromtimestamp(rows[-1][0]),
+                   color=C_DECLINE, zorder=0, linewidth=0)
+
+
+def render(db, out, minutes, name, title, fmt="svg"):
+    per, q, users, ustamps = load(db, minutes)
+    if not per:
+        return None
+    n = len(per) + (2 if users else 1)
+    fig, axes = plt.subplots(n, 1, figsize=(11, 2.0 * n + 1.0), sharex=True,
+                             facecolor=BG, gridspec_kw=dict(hspace=0.32))
+    if n == 1:
+        axes = [axes]
+
+    ax = axes[0]
+    if q:
+        t = [datetime.fromtimestamp(r[0]) for r in q]
+        ax.stackplot(t, [r[1] for r in q], [r[2] for r in q],
+                     colors=[C_RUN, C_IDLE], labels=["running", "idle"], linewidth=0)
+        ax.legend(loc="upper left", fontsize=8, frameon=False, ncol=2)
+    ax.set_ylabel("jobs", fontsize=9)
+    ax.set_title(title, fontsize=11, color=FG, loc="left", pad=8)
+
+    rest = axes[1:]
+    if users:
+        ax = rest[0]
+        rest = rest[1:]
+        t = [datetime.fromtimestamp(x) for x in ustamps]
+        names = sorted(users, key=lambda u: -sum(users[u].values()))
+        series = [[users[u].get(x, 0.0) for x in ustamps] for u in names]
+        # Legend on the identity, not the full principal: "who", not "who@where".
+        labels = [u.split("@")[0][:16] for u in names]
+        if series:
+            ax.stackplot(t, *series, labels=labels,
+                         colors=[C_USERS[i % len(C_USERS)] for i in range(len(series))],
+                         linewidth=0)
+            ax.legend(loc="upper left", fontsize=7, frameon=False,
+                      ncol=min(4, len(labels)))
+        ax.set_ylabel("cores by user", fontsize=8)
+
+    for ax, (m, rows) in zip(rest, sorted(per.items())):
+        if not rows:
+            continue
+        t = [datetime.fromtimestamp(r[0]) for r in rows]
+        shade_declines(ax, rows)
+        ax.plot(t, [r[1] for r in rows], color=C_LOAD, lw=1.1, label="load")
+        ax.plot(t, [r[1] - r[2] for r in rows], color=C_OWNER, lw=1.0, label="owner load")
+        cores = rows[-1][6] or 0
+        if cores:
+            ax.axhline(cores, color=GRID, lw=0.9, ls="--")
+        # Anchor at zero and show the full core count, so panels for a 4-core
+        # and a 16-core machine are read the same way. Autoscaling makes a
+        # machine at load 1.0 look as busy as one at load 15.
+        ax.set_ylim(0, max(cores * 1.15, max((r[1] for r in rows), default=1) * 1.15, 1))
+        ax.set_ylabel(m[:18], fontsize=8)
+        ax.legend(loc="upper left", fontsize=7, frameon=False, ncol=2)
+
+        r2 = ax.twinx()
+        mem_total_gb = (rows[-1][7] or 0) / 1024.0
+        r2.plot(t, [r[3] / 1024.0 for r in rows], color=C_MEM, lw=0.9, alpha=0.75)
+        # Fixed 0..total scale with the offset notation disabled. Left to
+        # autoscale, a value that barely moves is drawn as a huge swing around
+        # an offset like "+1.465e1", which is worse than useless.
+        if mem_total_gb > 0:
+            r2.set_ylim(0, mem_total_gb * 1.05)
+        r2.ticklabel_format(axis="y", useOffset=False, style="plain")
+        r2.set_ylabel("offered GB", fontsize=7, color=C_MEM)
+        r2.tick_params(axis="y", labelsize=7, colors=C_MEM)
+
+    for ax in axes:
+        ax.set_facecolor(BG)
+        ax.grid(True, color=GRID, lw=0.5, alpha=0.7)
+        ax.tick_params(labelsize=8)
+        for s in ax.spines.values():
+            s.set_color(GRID)
+
+    span_s = (rows[-1][0] - rows[0][0]) if rows else minutes * 60
+    if span_s < 900:
+        datefmt = "%H:%M:%S"
+    elif minutes / 60.0 <= 12:
+        datefmt = "%H:%M"
+    else:
+        datefmt = "%d %b %H:%M"
+    axes[-1].xaxis.set_major_formatter(mdates.DateFormatter(datefmt))
+    fig.autofmt_xdate(rotation=0, ha="center")
+    fig.text(0.99, 0.005, "generated %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
+             ha="right", fontsize=7, color="#9AA0A6")
+
+    os.makedirs(out, exist_ok=True)
+    final = os.path.join(out, "pool-%s.%s" % (name, fmt))
+    tmp = final + ".tmp"
+    # SVG by default: these are line plots, so vector stays crisp at any zoom
+    # and prints properly, and matplotlib writes it faster than the raster.
+    # The format must be passed explicitly because the temp name has no
+    # recognised extension.
+    fig.savefig(tmp, format=fmt, dpi=110, bbox_inches="tight", facecolor=BG)
+    plt.close(fig)
+    os.replace(tmp, final)
+    return final
+
+
+# window name -> (minutes covered, seconds before the image is considered stale)
+#
+# The cadences differ on purpose. Regenerating the 48h plot every thirty
+# seconds would burn CPU redrawing 34k points to change the last pixel, and
+# nobody watching a two-day trend needs it fresher than half an hour.
+WINDOWS = {
+    "30min": (30,   30),
+    "6h":    (360,  300),
+    "48h":   (2880, 1800),
+}
+
+
+def auto(db, out, fmt="svg"):
+    """Render only the windows whose image has gone stale.
+
+    One timer drives all three, and the staleness rule lives here where it can
+    be read and tested rather than being spread across six unit files.
+    """
+    now = time.time()
+    done = []
+    for name, (minutes, max_age) in sorted(WINDOWS.items(), key=lambda kv: kv[1][0]):
+        target = os.path.join(out, "pool-%s.%s" % (name, fmt))
+        try:
+            age = now - os.path.getmtime(target)
+        except OSError:
+            age = None                      # never rendered
+        if age is not None and age < max_age:
+            continue
+        label = {"30min": "last 30 minutes", "6h": "last 6 hours",
+                 "48h": "last 48 hours"}[name]
+        if render(db, out, minutes, name, "pool, %s" % label, fmt):
+            done.append(name)
+    return done
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--auto", action="store_true",
+                    help="render every window that has gone stale")
+    ap.add_argument("--minutes", type=int)
+    ap.add_argument("--name")
+    ap.add_argument("--title", default="")
+    ap.add_argument("--format", default="svg", choices=["svg", "png", "pdf"],
+                    help="svg by default: vector, and no larger here than png")
+    a = ap.parse_args()
+    if a.auto:
+        d = auto(a.db, a.out, a.format)
+        print("rendered: %s" % (", ".join(d) if d else "nothing stale"))
+    else:
+        if not a.minutes or not a.name:
+            ap.error("--minutes and --name are required without --auto")
+        r = render(a.db, a.out, a.minutes, a.name,
+                   a.title or "pool, last %s" % a.name, a.format)
+        print(r or "no samples in window")

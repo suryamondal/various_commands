@@ -1,0 +1,56 @@
+# Samples the pool into SQLite and writes live.json. Runs continuously.
+#
+# Deliberately the only thing that talks to the collector. Plot generation and
+# the web server read files, so viewers never cause a query.
+#
+# Install: /etc/systemd/system/pool-sample.service
+[Unit]
+Description=HTCondor pool sampler
+After=network-online.target condor.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=condor
+Group=condor
+StateDirectory=pool-web
+ExecStart=/usr/local/bin/pool-sample \
+    --db /var/lib/pool-web/pool.db \
+    --live /var/lib/pool-web/live.json \
+    --interval 5 --retain-hours 48
+Restart=always
+RestartSec=15
+Nice=10
+
+# SANDBOXING, and why it is this and not more.
+#
+# HTCondor's FS authentication proves who the caller is by having the client
+# create a file that the daemon then stats. That needs a /tmp which is both
+# WRITABLE and SHARED with the daemon, and the two obvious hardening knobs each
+# break one half of that:
+#
+#   PrivateTmp=yes          writable, but private. The daemon looks in the real
+#                           /tmp, finds nothing, and FS drops out of the method
+#                           list entirely - leaving only SSL, SCITOKENS and
+#                           KERBEROS, none of which this pool uses locally.
+#                           Observed: "Failed to authenticate with any method"
+#                           with FS absent rather than failing.
+#
+#   ProtectSystem=strict    shared, but read-only. The whole hierarchy is
+#                           read-only bar /dev, /proc and /sys, so the client
+#                           cannot create the file at all.
+#                           Observed: "Failed to authenticate using FS".
+#
+# ProtectSystem=full leaves /usr, /boot and /etc read-only while /tmp and /var
+# stay writable, which is what FS needs. This is a read-only monitoring service
+# running unprivileged as condor, so that is a reasonable place to stop rather
+# than granting exceptions one directive at a time.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

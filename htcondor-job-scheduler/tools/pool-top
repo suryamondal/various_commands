@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Live pool view. One row per machine, refreshed in place.
+
+WHY NOT condor_status
+  condor_status answers "what does the collector hold". In this pool that is
+  not the same question as "will this machine take my job". Admission is gated
+  on MEASURED state (load, PSI, free memory) via the START expression, so a
+  machine can advertise free slots and still decline every job, and that is the
+  design rather than a fault. This view puts Start next to the measured terms
+  that decide it, so "why is nothing running there" is answerable at a glance.
+
+  It also shows Memory as advertised headroom, which on workers is
+  MemAvailable minus a floor rather than a reservation ledger. The entry node
+  keeps the ledger, and is marked.
+
+Reads only. Stdlib only. Ctrl-C to quit.
+
+Usage: pool-top [-p ENTRY_NODE] [-i SECONDS]
+"""
+import argparse
+import curses
+import subprocess
+import time
+from collections import deque
+
+MACH_ATTRS = [
+    "Name", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
+    "TotalLoadAvg", "TotalCondorLoadAvg", "HostCpuPsiAvg10", "HostMemAvailMB",
+    "HostMemTotalMB", "HostDiskAvailMB", "Start", "OwnerSessionActive",
+]
+
+
+def run(cmd, timeout=20):
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return out.stdout if out.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def num(tok, default=0.0):
+    try:
+        return float(tok)
+    except (TypeError, ValueError):
+        return default
+
+
+def sample(pool):
+    """One poll. Returns (machines, queue-totals, error-string)."""
+    base = ["-pool", pool] if pool else []
+    raw = run(["condor_status"] + base + ["-af"] + MACH_ATTRS)
+    if not raw.strip():
+        return [], {}, "collector unreachable"
+
+    machines = []
+    for line in raw.splitlines():
+        f = line.split()
+        if len(f) < len(MACH_ATTRS):
+            continue
+        name = f[0]
+        # Dynamic slots inherit the parent's published Memory, so their memory
+        # columns are meaningless. Read the partitionable parent only.
+        if "slot1_" in name or name.startswith("slot") and "_" in name.split("@")[0]:
+            continue
+        d = dict(zip(MACH_ATTRS, f))
+        d["short"] = name.split("@")[-1].split(".")[0]
+        machines.append(d)
+
+    q = {}
+    qraw = run(["condor_q"] + (["-name", pool] if pool else []) + ["-all", "-af", "JobStatus"])
+    for line in qraw.split():
+        q[line] = q.get(line, 0) + 1
+    return sorted(machines, key=lambda m: m["short"]), q, ""
+
+
+def bar(frac, width, ch="#", pad="."):
+    frac = 0.0 if frac < 0 else (1.0 if frac > 1 else frac)
+    n = int(round(frac * width))
+    return ch * n + pad * (width - n)
+
+
+def spark(series, width):
+    """Rolling history, drawn with block characters."""
+    glyphs = " .:-=+*#"
+    if not series:
+        return " " * width
+    vals = list(series)[-width:]
+    hi = max(vals) or 1
+    out = "".join(glyphs[min(len(glyphs) - 1, int(v / hi * (len(glyphs) - 1)))] for v in vals)
+    return out.rjust(width)
+
+
+def draw(stdscr, machines, q, hist, pool, interval, err):
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    A_HEAD = curses.A_BOLD | curses.A_REVERSE
+    row = 0
+
+    title = " pool-top   %s   refresh %ds " % (pool or "local", interval)
+    stdscr.addnstr(row, 0, title.ljust(w), w, A_HEAD)
+    row += 2
+
+    hdr = ("%-22s %-9s %-14s %6s %6s %-14s %7s %6s  %s"
+           % ("MACHINE", "STATE", "CORES", "LOAD", "OWNER", "MEMORY", "AVAIL", "CPU%", "START"))
+    stdscr.addnstr(row, 0, hdr[:w], w, curses.A_BOLD)
+    row += 1
+
+    for m in machines:
+        if row >= h - 6:
+            break
+        tot_c = num(m["TotalCpus"], 1) or 1
+        free_c = num(m["Cpus"])
+        used_c = max(0.0, tot_c - free_c)
+        load = num(m["TotalLoadAvg"])
+        owner = max(0.0, load - num(m["TotalCondorLoadAvg"]))
+        adv = num(m["Memory"])
+        tot_m = num(m["TotalMemory"], 1) or 1
+        avail = num(m["HostMemAvailMB"])
+        psi = num(m["HostCpuPsiAvg10"])
+        start = m["Start"].lower() == "true"
+
+        # A ledger machine reports Memory == TotalMemory with nothing carved.
+        ledger = abs(adv - tot_m) < 1.0
+
+        line = ("%-14s %-9s [%s] %5.0f%% %6.2f %6.2f [%s] %6.0fM %5.1f  %s"
+                % (m["short"][:22],
+                   (m["State"] + "/" + m["Activity"])[:9],
+                   bar(used_c / tot_c, 10),
+                   100.0 * used_c / tot_c,
+                   load, owner,
+                   bar(1.0 - (adv / tot_m if tot_m else 0), 10, "#", "."),
+                   avail, psi,
+                   "yes" if start else "NO"))
+        attr = curses.A_NORMAL if start else curses.A_BOLD
+        stdscr.addnstr(row, 0, line[:w], w, attr)
+        if ledger and row + 1 < h:
+            stdscr.addnstr(row, min(w - 9, len(line) + 1), "[ledger]", 9, curses.A_DIM)
+        row += 1
+
+    row += 1
+    running = q.get("2", 0)
+    idle = q.get("1", 0)
+    held = q.get("5", 0)
+    done = q.get("4", 0)
+    stdscr.addnstr(row, 0,
+                   ("queue   running %-5d idle %-5d held %-5d completed %-5d"
+                    % (running, idle, held, done))[:w], w, curses.A_BOLD)
+    row += 1
+    stdscr.addnstr(row, 0, ("running %s" % spark(hist, min(60, w - 10)))[:w], w)
+    row += 2
+
+    if err:
+        stdscr.addnstr(row, 0, ("!! %s" % err)[:w], w, curses.A_BOLD)
+        row += 1
+    stdscr.addnstr(min(h - 1, row), 0,
+                   " START=NO means the machine is declining work by policy, not broken. "
+                   "q quits."[:w], w, curses.A_DIM)
+    stdscr.refresh()
+
+
+def main(stdscr, args):
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    hist = deque(maxlen=240)
+    last = 0.0
+    machines, q, err = [], {}, "polling..."
+    while True:
+        if time.time() - last >= args.interval:
+            machines, q, err = sample(args.pool)
+            hist.append(q.get("2", 0))
+            last = time.time()
+        draw(stdscr, machines, q, hist, args.pool, args.interval, err)
+        time.sleep(0.2)
+        try:
+            if stdscr.getch() in (ord("q"), ord("Q")):
+                return
+        except curses.error:
+            pass
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-p", "--pool", default="", help="entry node (condor_status -pool)")
+    ap.add_argument("-i", "--interval", type=int, default=10, help="seconds between polls")
+    a = ap.parse_args()
+    try:
+        curses.wrapper(main, a)
+    except KeyboardInterrupt:
+        pass

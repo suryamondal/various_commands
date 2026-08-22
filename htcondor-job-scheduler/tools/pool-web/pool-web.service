@@ -1,0 +1,36 @@
+# Serves the static dashboard. Read-only, no CGI, no application code.
+#
+# python3 -m http.server rather than installing a web server: this runs on a
+# desktop that belongs to someone else, and the whole job is handing out four
+# files. apache2's binary is present on that machine but has no unit and no
+# docroot, so it is a leftover rather than something to build on.
+#
+# BINDING: 0.0.0.0 serves both pool subnets. The pool is on private networks,
+# but this does expose a port on the entry node. Bind a single address instead
+# if that is not wanted.
+#
+# Install: /etc/systemd/system/pool-web.service
+[Unit]
+Description=HTCondor pool status page
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=condor
+Group=condor
+StateDirectory=pool-web
+WorkingDirectory=/var/lib/pool-web
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 0.0.0.0 --directory /var/lib/pool-web
+Restart=always
+RestartSec=10
+Nice=10
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/var/lib/pool-web
+
+[Install]
+WantedBy=multi-user.target

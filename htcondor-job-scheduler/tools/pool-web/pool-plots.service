@@ -1,0 +1,29 @@
+# Renders whichever history windows have gone stale. Oneshot, driven by a timer.
+#
+# The per-window cadence lives in pool-plots (WINDOWS), not in six unit files,
+# so one timer at the fastest cadence drives all three.
+#
+# Install: /etc/systemd/system/pool-plots.service
+[Unit]
+Description=Render HTCondor pool history plots
+After=pool-sample.service
+
+[Service]
+Type=oneshot
+User=condor
+Group=condor
+StateDirectory=pool-web
+ExecStart=/usr/local/bin/pool-plots \
+    --db /var/lib/pool-web/pool.db \
+    --out /var/lib/pool-web --auto
+Nice=15
+# Plotting is the only CPU this dashboard spends. On a shared desktop that
+# should never compete with the owner or with jobs.
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/pool-web

@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""Poll the pool every few seconds into SQLite, and write a live snapshot.
+
+Separation of concerns, deliberately:
+
+  this script   samples and stores. Two commands, condor_status and
+                condor_q -global, which between them carry everything the page
+                and the plots need. Cheap, stdlib only, no plotting libraries.
+  pool-plots    reads the store on a timer and writes images.
+  the web page  reads static files. A viewer never triggers a query, so one
+                tab and a hundred tabs cost the collector exactly the same.
+
+Retention is 48h of raw samples. At one row per machine per 5s that is ~34.5k
+rows per machine, so a four-machine pool holds ~140k rows and a few tens of MB.
+Downsampling would buy nothing at this scale and would cost fidelity on the
+long plot, so there is none.
+
+live.json is written atomically (temp file, then rename) so a page fetching it
+mid-write never sees a truncated document.
+
+Usage: pool-sample --db PATH --live PATH [-p ENTRY_NODE] [-i SECONDS]
+"""
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+
+ATTRS = ["Name", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
+         "TotalLoadAvg", "TotalCondorLoadAvg", "HostCpuPsiAvg10", "HostMemPsiAvg10",
+         "HostMemAvailMB", "HostDiskAvailMB", "Start"]
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS samples (
+  ts          INTEGER NOT NULL,
+  machine     TEXT    NOT NULL,
+  cpus_total  REAL, cpus_free REAL,
+  load        REAL, condor_load REAL,
+  mem_adv     REAL, mem_total REAL, mem_avail REAL,
+  cpu_psi     REAL, mem_psi REAL,
+  start       INTEGER,
+  PRIMARY KEY (ts, machine)
+);
+CREATE INDEX IF NOT EXISTS samples_ts ON samples(ts);
+CREATE TABLE IF NOT EXISTS queue (
+  ts      INTEGER PRIMARY KEY,
+  running INTEGER, idle INTEGER, held INTEGER, completed INTEGER
+);
+-- Per-user demand, from the queue. Sampled at the same cadence as machines.
+CREATE TABLE IF NOT EXISTS user_jobs (
+  ts       INTEGER NOT NULL,
+  user     TEXT    NOT NULL,
+  running  INTEGER, idle INTEGER, held INTEGER,
+  req_cpus REAL,    req_mem_mb REAL,
+  PRIMARY KEY (ts, user)
+);
+CREATE INDEX IF NOT EXISTS user_jobs_ts ON user_jobs(ts);
+"""
+
+
+def run(cmd, timeout=25):
+    """Run a command, and SAY SO when it fails.
+
+    An earlier version returned "" on any failure and discarded stderr, which
+    made a broken command indistinguishable from an empty pool: the service ran
+    happily, live.json said machines:[], and journalctl showed nothing. That is
+    the same silent-failure shape this pool is a catalogue of, reintroduced in
+    the tool meant to observe it. Failures now go to stderr, which systemd
+    captures.
+    """
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if p.returncode != 0:
+            sys.stderr.write("FAILED rc=%d: %s\n%s\n"
+                             % (p.returncode, " ".join(cmd), p.stderr.strip()[:400]))
+            sys.stderr.flush()
+            return ""
+        return p.stdout
+    except Exception as exc:
+        sys.stderr.write("ERROR: %s: %s\n" % (" ".join(cmd), exc))
+        sys.stderr.flush()
+        return ""
+
+
+def num(t, d=0.0):
+    try:
+        return float(t)
+    except (TypeError, ValueError):
+        return d
+
+
+_SCHEDDS = None
+
+
+def schedd_hosts(pool):
+    """Machines running a schedd, looked up once and cached.
+
+    That is exactly the rule the STARTD_CRON job uses to decide whether to
+    publish Memory, so it is the honest way to tell a reservation ledger from
+    measured headroom. Comparing Memory against TotalMemory does not work: a
+    ledger machine with a job carved out also reports less than its total.
+
+    Cached because it does not change while the pool runs, which keeps the
+    steady-state cost at two commands per sample.
+    """
+    global _SCHEDDS
+    if _SCHEDDS is None:
+        base = ["-pool", pool] if pool else []
+        found = set()
+        for line in run(["condor_status"] + base + ["-schedd", "-af", "Machine"]).split():
+            found.add(line.split(".")[0])
+        # Leave it unset on failure so the next sample retries rather than
+        # caching an empty answer forever.
+        _SCHEDDS = found or None
+    return _SCHEDDS or set()
+
+
+def poll(pool):
+    base = ["-pool", pool] if pool else []
+    raw = run(["condor_status"] + base + ["-af"] + ATTRS)
+
+    schedds = schedd_hosts(pool)
+    rows, live = [], []
+    for line in raw.splitlines():
+        f = line.split()
+        if len(f) < len(ATTRS):
+            continue
+        d = dict(zip(ATTRS, f))
+        name = d["Name"]
+        # Dynamic slots inherit the parent's published Memory, so their memory
+        # columns describe the machine rather than the slot. Parent only.
+        if "_" in name.split("@")[0]:
+            continue
+        short = name.split("@")[-1].split(".")[0]
+        rec = dict(
+            machine=short,
+            cpus_total=num(d["TotalCpus"]), cpus_free=num(d["Cpus"]),
+            load=num(d["TotalLoadAvg"]), condor_load=num(d["TotalCondorLoadAvg"]),
+            mem_adv=num(d["Memory"]), mem_total=num(d["TotalMemory"]),
+            mem_avail=num(d["HostMemAvailMB"]),
+            cpu_psi=num(d["HostCpuPsiAvg10"]), mem_psi=num(d["HostMemPsiAvg10"]),
+            start=1 if d["Start"].lower() == "true" else 0,
+        )
+        rows.append(rec)
+        rec2 = dict(rec)
+        rec2["state"] = d["State"] + "/" + d["Activity"]
+        rec2["ledger"] = short in schedds
+        live.append(rec2)
+
+    q = {}
+    users = {}
+    # -global asks every schedd in the pool rather than one named one. There is
+    # a single schedd today, so it is equivalent, but it keeps working if a
+    # second one ever appears and needs no name plumbing here.
+    qraw = run(["condor_q", "-global", "-all", "-af",
+                "Owner", "JobStatus", "RequestCpus", "RequestMemory"])
+    for line in qraw.splitlines():
+        f = line.split()
+        if len(f) < 4:
+            continue
+        owner, st = f[0], f[1]
+        q[st] = q.get(st, 0) + 1
+        u = users.setdefault(owner, dict(user=owner, running=0, idle=0, held=0,
+                                         req_cpus=0.0, req_mem_mb=0.0))
+        if st == "2":
+            u["running"] += 1
+            # Only running jobs hold resources, so only they count toward demand.
+            u["req_cpus"] += num(f[2])
+            u["req_mem_mb"] += num(f[3])
+        elif st == "1":
+            u["idle"] += 1
+        elif st == "5":
+            u["held"] += 1
+    counts = dict(running=q.get("2", 0), idle=q.get("1", 0),
+                  held=q.get("5", 0), completed=q.get("4", 0))
+    return rows, counts, live, list(users.values())
+
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--db", required=True)
+    ap.add_argument("--live", required=True)
+    ap.add_argument("-p", "--pool", default="")
+    ap.add_argument("-i", "--interval", type=int, default=5)
+    ap.add_argument("--retain-hours", type=int, default=48)
+    ap.add_argument("--once", action="store_true", help="single sample, for testing")
+    a = ap.parse_args()
+
+    os.makedirs(os.path.dirname(os.path.abspath(a.db)), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(a.live)), exist_ok=True)
+    db = sqlite3.connect(a.db, timeout=20)
+    db.executescript(SCHEMA)
+    # WAL so the plot generator can read while this process writes.
+    db.execute("PRAGMA journal_mode=WAL")
+    db.commit()
+
+    last_prune = 0.0
+    while True:
+        ts = int(time.time())
+        rows, counts, live, users = poll(a.pool)
+        if rows:
+            db.executemany(
+                "INSERT OR REPLACE INTO samples VALUES (:ts,:machine,:cpus_total,"
+                ":cpus_free,:load,:condor_load,:mem_adv,:mem_total,:mem_avail,"
+                ":cpu_psi,:mem_psi,:start)",
+                [dict(r, ts=ts) for r in rows])
+            db.execute("INSERT OR REPLACE INTO queue VALUES (?,?,?,?,?)",
+                       (ts, counts["running"], counts["idle"],
+                        counts["held"], counts["completed"]))
+            if users:
+                db.executemany(
+                    "INSERT OR REPLACE INTO user_jobs VALUES (:ts,:user,:running,"
+                    ":idle,:held,:req_cpus,:req_mem_mb)",
+                    [dict(u, ts=ts) for u in users])
+            db.commit()
+
+
+        tmp = a.live + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(dict(ts=ts, generated=time.strftime("%Y-%m-%d %H:%M:%S"),
+                           pool=a.pool or "local", queue=counts,
+                           machines=sorted(live, key=lambda m: m["machine"]),
+                           users=sorted(users, key=lambda u: -u["running"])),
+                      fh, indent=1)
+        os.replace(tmp, a.live)
+
+        if time.time() - last_prune > 3600:
+            cut = ts - a.retain_hours * 3600
+            db.execute("DELETE FROM samples   WHERE ts < ?", (cut,))
+            db.execute("DELETE FROM queue     WHERE ts < ?", (cut,))
+            db.execute("DELETE FROM user_jobs WHERE ts < ?", (cut,))
+            db.commit()
+            last_prune = time.time()
+
+        if a.once:
+            return
+        time.sleep(max(1, a.interval))
+
+
+if __name__ == "__main__":
+    main()
