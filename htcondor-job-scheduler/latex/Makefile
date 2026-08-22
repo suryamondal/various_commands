@@ -24,20 +24,9 @@ PDF       := $(BUILD)/$(MAIN).pdf
 LOG       := $(BUILD)/$(MAIN).log
 SOURCES   := $(MAIN).tex preamble.tex $(wildcard chapters/*.tex) $(wildcard appendix/*.tex)
 
-# Sanitisation covers the whole repo, not just this document. Two leaks reached
-# a commit because the scan only looked at latex/ while the same text had been
-# pasted into README.md as well.
-SCANNED   := $(SOURCES) $(wildcard ../*.md) $(wildcard ../handover/*.md)
 LATEXMK   := latexmk -pdf
 VIEWER    := $(shell command -v xdg-open || command -v open)
 
-# Patterns that must never reach a tracked source file. This document names
-# machine CLASSES only; concrete hosts, addresses and credentials live in
-# condor-host-list and scripts/, both untracked. A leak here would be committed.
-SECRETS   := 172\.[0-9]+\.[0-9]+\.[0-9]+|192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+
-SECRETS   := $(SECRETS)|100\.(6[4-9]|[7-9][0-9]|1[0-2][0-9])\.[0-9]+\.[0-9]+|fd[0-9a-f]{2}[:-][0-9a-f-]+
-SECRETS   := $(SECRETS)|<names-from-untracked-file>
-SECRETS   := $(SECRETS)|<pool>|BEGIN [A-Z ]*PRIVATE KEY|eyJ[A-Za-z0-9_-]{10,}
 
 .PHONY: all watch view check sanitise strict stats clean distclean help
 
@@ -75,11 +64,12 @@ check: $(PDF) sanitise
 	  | grep -oE "[0-9.]+" | awk '$$1>20' | wc -l | xargs printf "   %s\n"
 
 # The repo's rule is machine classes only. Run this before every commit.
+# The check lives in tools/sanitise.sh so it can scan `git ls-files` - including
+# this Makefile. Machine names are read from the untracked condor-host-list,
+# never listed in a tracked file.
 sanitise:
 	@echo "== sanitisation: hostnames, addresses, credentials =="
-	@if grep -rnEi "$(SECRETS)" $(SCANNED) 2>/dev/null; then \
-	  echo "   LEAK - the above must not be committed"; exit 1; \
-	else echo "   clean"; fi
+	@../tools/sanitise.sh
 
 # For CI: any warning at all is a failure.
 strict:
