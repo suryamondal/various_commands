@@ -1,12 +1,12 @@
-# Handover: submit node on a macOS laptop
+# Handover: submit node on a laptop (macOS or Ubuntu)
 
 Setting up a machine to submit jobs into the pool, where **the machine is not
 yours**. That constraint decides most of what follows: no root, no daemons, no
 launchd service, nothing outside the user's home directory, and a one-line
 uninstall.
 
-Hand this file to whoever owns the laptop. They can do all of Part B without
-you, and without administrator access.
+Hand this file to whoever owns the laptop. **Part B is macOS, Part C is
+Ubuntu** — do one or the other, not both.
 
 > **Placeholders.** `<ENTRY_NODE>`, `<POOL_DOMAIN>` and `<USER>` are filled in
 > from `condor-host-list`. The filled copy contains real hostnames — keep it out
@@ -125,7 +125,21 @@ ls -l ~/handover.token
 The `ls` should say `No such file or directory`. Run those two lines on **every**
 machine the file passed through, including your own laptop.
 
-### A4. Tell them the retrieval rule
+### A4. Send them the helper script
+
+`tools/pool-run` from this repository does the whole submit-and-retrieve cycle
+in one command. Send it along with the token — it saves the recipient four
+manual steps every time, and more importantly it means they cannot forget the
+last one.
+
+```
+scp tools/pool-run <their-mac>:~/
+```
+
+If you have no direct route to their machine, send the file however you sent
+the token. It contains no hostnames, addresses or credentials.
+
+### A5. Tell them the retrieval rule
 
 Spooled jobs stay in the queue in `Completed` state, holding disk on the entry
 node, **until their output is fetched**. Someone who submits and never runs
@@ -214,9 +228,18 @@ we want. Skip it.
 
 ### B4. Configuration
 
+The settings go in a file you own, and one environment variable points HTCondor
+at it. Run every line below.
+
+> **Why not `~/.condor/user_config`?** That per-user file is only read when
+> HTCondor *daemons* run as a non-root user. This machine runs no daemons at
+> all, so it would be silently ignored — the tools would keep using the stock
+> configuration and never find the pool. `CONDOR_CONFIG` is read by the tools
+> themselves, which is what we need. Verified, not assumed.
+
 ```
-mkdir -p ~/.condor
-cat > ~/.condor/user_config <<'EOF'
+mkdir -p ~/condor-pool
+cat > ~/condor-pool/condor_config <<'EOF'
 # Submit-only client for the <POOL_DOMAIN> pool.
 #
 # No daemons run on this machine. Every connection is outbound, so nothing
@@ -238,12 +261,26 @@ DEFAULT_DOMAIN_NAME = local
 # exactly or the token maps to a different identity.
 UID_DOMAIN = <POOL_DOMAIN>
 
+# --- where the token lives ----------------------------------------------
+SEC_TOKEN_DIRECTORY = $ENV(HOME)/.condor/tokens.d
+
 # --- run nothing --------------------------------------------------------
 # Belt and braces: even if condor_master were started by accident, it would
 # have nothing to start.
 DAEMON_LIST =
 EOF
 ```
+
+Now make that file the one HTCondor uses, permanently:
+
+```
+echo 'export CONDOR_CONFIG="$HOME/condor-pool/condor_config"' >> ~/.zshrc
+export CONDOR_CONFIG="$HOME/condor-pool/condor_config"
+condor_config_val CONDOR_HOST
+```
+
+The last line should print `<ENTRY_NODE>`. If it prints something else, or
+`Not defined`, the export did not take — open a new terminal and try again.
 
 `FILESYSTEM_DOMAIN` is deliberately left alone. Hosts that share one are assumed
 to share storage and **skip file transfer entirely** — there is no shared
@@ -282,6 +319,159 @@ Open a new terminal and confirm it survived:
 ```
 which condor_submit
 ```
+
+---
+
+## Part C — On an Ubuntu laptop
+
+Skip this whole part if you are on macOS; Part B covers that.
+
+Ubuntu is the easier of the two, for one reason worth knowing: the version
+`apt` installs is **23.4.0**, which is exactly what the pool runs. There is no
+version-skew question to worry about, unlike the macOS tarball.
+
+You need `sudo` for step C1 only. If you do not have it, see C7.
+
+### C0. Preflight
+
+```
+lsb_release -d
+uname -m
+ping -c1 <ENTRY_NODE>
+```
+
+The `ping` must succeed. If it says `Name or service not known`, mDNS is not
+working yet — do C5 first, then come back.
+
+### C1. Install
+
+```
+sudo apt update
+sudo apt install -y condor
+condor_version
+```
+
+`condor_version` should print `23.4.0`. If it prints something noticeably
+newer, tell the operator before going further.
+
+### C2. Stop it from running anything
+
+The package installs a system service and starts it. This machine submits jobs;
+it does not execute them, so nothing should be running.
+
+```
+sudo systemctl disable --now condor
+systemctl is-active condor
+```
+
+The last line should print `inactive`. That is correct, not a failure.
+
+### C3. Configuration
+
+```
+sudo tee /etc/condor/config.d/50-submit-client.config > /dev/null <<'EOF'
+# Submit-only client. No daemons run on this machine; every connection it makes
+# is outbound, so nothing needs to reach this laptop.
+
+# --- which pool ---------------------------------------------------------
+CONDOR_HOST    = <ENTRY_NODE>
+COLLECTOR_HOST = $(CONDOR_HOST):9618
+
+# --- naming -------------------------------------------------------------
+# condor_submit -remote and condor_q -name reject any name without a dot.
+DEFAULT_DOMAIN_NAME = local
+
+# Principal namespace only, never resolved as a hostname. Must match the pool
+# exactly or the token maps to a different identity.
+UID_DOMAIN = <POOL_DOMAIN>
+
+# --- run nothing --------------------------------------------------------
+DAEMON_LIST =
+EOF
+condor_config_val CONDOR_HOST
+```
+
+The last line should print `<ENTRY_NODE>`.
+
+`FILESYSTEM_DOMAIN` is deliberately left alone. Machines sharing one are assumed
+to share storage and **skip file transfer entirely** — there is no shared
+storage here, so setting it would silently break every job.
+
+### C4. Install the token
+
+Assuming the file you were given is in your `Downloads` folder and is called
+`handover.token`, run all five lines:
+
+```
+mkdir -p ~/.condor/tokens.d
+chmod 700 ~/.condor/tokens.d
+mv ~/Downloads/handover.token ~/.condor/tokens.d/office-pool
+chmod 600 ~/.condor/tokens.d/office-pool
+ls -l ~/.condor/tokens.d/office-pool
+```
+
+The `ls` should show `-rw-------`. If it does not, run the `chmod 600` line
+again.
+
+### C5. Make `.local` names resolve
+
+macOS does this natively; Ubuntu does not always. Check first:
+
+```
+getent hosts <ENTRY_NODE>
+```
+
+If that prints an address, skip the rest of C5. If it prints nothing:
+
+```
+sudo apt install -y avahi-daemon libnss-mdns
+grep '^hosts:' /etc/nsswitch.conf
+```
+
+The `hosts:` line must contain `mdns4_minimal` **and** end with `mdns4`. A
+working line looks exactly like this:
+
+```
+hosts:          files mdns4_minimal [NOTFOUND=return] dns mdns4
+```
+
+If the trailing `mdns4` is missing, add it:
+
+```
+sudo sed -i 's/^\(hosts:.*dns\)$/\1 mdns4/' /etc/nsswitch.conf
+grep '^hosts:' /etc/nsswitch.conf
+getent hosts <ENTRY_NODE>
+```
+
+The trailing `mdns4` matters: without it, a name is only tried through mDNS
+*before* DNS, and a DNS server that answers "no such host" ends the search.
+
+### C6. Verify
+
+Run all of these. Do not stop early — passing the first three and failing the
+fourth is the normal failure.
+
+```
+condor_config_val CONDOR_HOST
+condor_config_val UID_DOMAIN
+condor_config_val DAEMON_LIST
+pgrep -a condor_ || echo "no condor processes - correct"
+condor_ping -verbose -type COLLECTOR READ
+condor_status
+condor_q -name <ENTRY_NODE>
+```
+
+`condor_config_val DAEMON_LIST` printing an empty line is correct. Then run the
+hello-job test in section 3 — that is the only check that proves anything.
+
+### C7. If you do not have sudo
+
+Use the tarball instead, exactly as in Part B, with three changes:
+
+- Skip B1a and B2 entirely. Those are macOS-specific (Rosetta, and clearing
+  Gatekeeper's quarantine flag). Linux has neither.
+- In B6, use `~/.bashrc` instead of `~/.zshrc`, since Ubuntu defaults to bash.
+- Everything else — the download, `CONDOR_CONFIG`, the token — is identical.
 
 ---
 
@@ -358,6 +548,47 @@ Two files naming two different pool machines means it works end to end.
 
 ## 4. Daily use
 
+### The easy way
+
+If you were given `pool-run`, put it somewhere permanent and make it runnable.
+Do this once:
+
+On **macOS**:
+
+```
+mkdir -p ~/bin
+mv ~/pool-run ~/bin/pool-run
+chmod +x ~/bin/pool-run
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+export PATH="$HOME/bin:$PATH"
+```
+
+On **Ubuntu**, the same five lines with `~/.bashrc` in place of `~/.zshrc`:
+
+```
+mkdir -p ~/bin
+mv ~/pool-run ~/bin/pool-run
+chmod +x ~/bin/pool-run
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+export PATH="$HOME/bin:$PATH"
+```
+
+After that, every run is one command:
+
+```
+pool-run myjob.sub <ENTRY_NODE>
+```
+
+It submits, waits, brings each job's output back the moment that job finishes,
+and frees the space on the entry node. It prints progress like
+`retrieved 7/100` as results arrive. When it says `done`, everything is on your
+laptop and nothing is left behind.
+
+That is all most people need. The rest of this section explains what it is
+doing, and how to do it by hand if you prefer.
+
+### The manual way
+
 Four steps every time. Step 1 prints a cluster number, like
 `1 job(s) submitted to cluster 42`. Use that number — `42` in this example — in
 steps 3 and 4.
@@ -387,7 +618,7 @@ fetch it. Nothing sends it to you.
 **Step 4 is not optional either, and it deletes nothing of yours.** The job has
 already finished and its output is already on your laptop by then; `condor_rm`
 only frees the disk the job was still holding on the entry node. Skip it and
-that space stays occupied for ten days. See A4 for why that matters to everyone
+that space stays occupied for ten days. See A5 for why that matters to everyone
 else.
 
 ### Writing jobs for this pool
@@ -444,8 +675,12 @@ order.
 | Symptom | Likely cause | Check |
 |---|---|---|
 | `Error: unknown host` | Off-LAN, so mDNS cannot resolve | `ping -c1 <ENTRY_NODE>`; use Tailscale |
-| Binary "cannot be opened" / killed | Gatekeeper quarantine not cleared | Re-do B2 from a fresh tarball |
-| `command not found: condor_submit` | `condor.sh` not sourced in this shell | `. ~/condor/condor.sh`; check `~/.zshrc` |
+| Binary "cannot be opened" / killed | **macOS**: Gatekeeper quarantine not cleared | Re-do B2 from a fresh tarball |
+| `command not found: condor_submit` | **macOS**: `condor.sh` not sourced in this shell | `. ~/condor/condor.sh`; check `~/.zshrc` |
+| `command not found: condor_submit` | **Ubuntu**: package not installed | `sudo apt install -y condor` |
+| Tools find the wrong pool, or `Not defined` | **macOS**: `CONDOR_CONFIG` not exported in this shell | `echo $CONDOR_CONFIG`; open a new terminal |
+| `getent hosts <ENTRY_NODE>` prints nothing | **Ubuntu**: mDNS not set up | See C5 |
+| A condor daemon is running on this laptop | **Ubuntu**: the package service was left enabled | `sudo systemctl disable --now condor` |
 | `condor_ping` fails or hangs on a trust prompt | Token missing, wrong mode, or wrong identity | `ls -l ~/.condor/tokens.d/` — must be `600` |
 | Authenticates but jobs never start | Identity has no account on the entry node | See A1 — this is the known open risk |
 | `Hold code 16` during submit | Normal and transient — input files spooling | Wait |
@@ -463,15 +698,32 @@ working as designed — its owner is using it.
 
 Complete removal, no root, nothing left behind:
 
-Run all four lines. The third deletes the startup line from your shell
-configuration; the fourth confirms it is gone and should print nothing.
+**On macOS**, run all five lines. The third and fourth delete the two startup
+lines from your shell configuration; the fifth confirms they are gone and
+should print nothing.
 
 ```
-rm -rf ~/condor ~/.condor ~/condor-hello
+rm -rf ~/condor ~/condor-pool ~/.condor ~/condor-hello
 rm -f ~/condor*.tar.gz
 sed -i '' '/condor\/condor.sh/d' ~/.zshrc
-grep condor ~/.zshrc
+sed -i '' '/CONDOR_CONFIG/d' ~/.zshrc
+grep -i condor ~/.zshrc
 ```
+
+**On Ubuntu**, run all four lines instead. `--purge` removes the configuration
+in `/etc/condor` as well as the program.
+
+```
+sudo apt remove --purge -y condor
+sudo rm -rf /etc/condor
+rm -rf ~/.condor ~/condor-hello
+grep -i condor ~/.bashrc
+```
+
+The `grep` should print nothing. If you used the no-sudo tarball route instead
+of `apt`, use the macOS lines above but with `~/.bashrc` in place of
+`~/.zshrc`, and drop the `''` after `sed -i` — that empty argument is a macOS
+quirk that Ubuntu's `sed` rejects.
 
 Then tell the operator, so the token can be treated as revoked and the entry
 node account removed if it was created for this.

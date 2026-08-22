@@ -44,7 +44,7 @@ untracked — this document names machine *classes* only.
 | Entry node | `master`, `collector`, `negotiator`, `schedd`, `startd` (limited), `shared_port` |
 | Worker | `master`, `startd`, `kbdd` |
 | User PC (desktop) | worker daemons + submit client (`condor_submit -remote -spool`); **no schedd**. Template: `scripts/50-user-pc.config` |
-| Submit-only client | **no daemons at all**; submit client only. Typically laptops. Template: `handover/macos-submit-node.md` |
+| Submit-only client | **no daemons at all**; submit client only. Typically laptops. Template: `handover/submit-node.md` (macOS and Ubuntu) |
 
 One schedd, on the entry node. User PCs do not queue locally — a schedd on a
 laptop dies with the lid.
