@@ -1,0 +1,79 @@
+\section{System}
+\label{sec:system}
+
+\subsection{Roles}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.26\textwidth} Y}
+\toprule
+\textbf{Role} & \textbf{Daemons} \\
+\midrule
+Entry node & \kn{master}, \kn{collector}, \kn{negotiator}, \kn{schedd}, \kn{startd} (limited), \kn{shared\_port} \\
+Worker & \kn{master}, \kn{startd} \\
+User desktop & Worker daemons plus the submit client; \textbf{no schedd} \\
+Submit-only client & No daemons at all. Typically laptops \\
+\bottomrule
+\end{tabularx}
+\caption{Daemon layout by role.}
+\end{table}
+
+There is one schedd, on the entry node. A schedd on a laptop dies with the lid
+and takes its queue with it, so centralising it means a user's jobs survive
+their own machine sleeping, which is the normal state of a laptop between two
+meetings.
+
+Donation is expected of desktops, which sit still and stay plugged in. A laptop
+that only submits is a normal member of the pool rather than an opt-out, and the
+reason is a protocol asymmetry rather than a preference: a worker must be
+reachable \emph{inbound} to be claimed, so an off-network laptop registers,
+matches, and then fails the claim, while a submit client makes only
+\emph{outbound} connections and therefore works through a tunnel and from
+outside the office.
+
+\subsection{Choosing the entry node}
+
+The entry node is a low-power four-core machine rather than the pool's
+highest-core one. The role is bounded by \kn{fsync} latency on the job queue,
+RAM per shadow and NIC bandwidth, not by CPU, so sixteen threads buy nothing
+there. The four-core class is also the fleet's repeated unit, which makes it the
+honest thing to test on: a production entry node will be commodity hardware, and
+testing on the one scarce machine would teach nothing transferable. The scaling
+path is horizontal, by adding schedds or splitting the collector and negotiator
+off, never vertical.
+
+\subsection{Donate everything, protect dynamically}
+
+The instinct when pooling somebody's desktop is to hold capacity back. This
+design does the opposite on workers, because static reservation and the
+contention policy of \S\ref{sec:admission} defend against the same thing.
+Holding capacity back only idles it in the common case, which is that nobody is
+using the machine, while the policy would suspend anyway the moment someone
+arrives.
+
+The entry node is deliberately different. It carries the collector, negotiator
+and schedd, and if the schedd cannot fork shadows or \kn{fsync} its queue then
+nothing anywhere in the pool runs, so it reserves about half its cores and
+roughly two thirds of its memory.
+
+\subsection{Advertisement cadence}
+
+\kn{UPDATE\_INTERVAL} defaults to 300 seconds, a value sized for pools of
+thousands. At this scale an advertisement every 30 seconds is free, and the
+default costs twice: \kn{condor\_status} showed a frozen value for two and a half
+minutes while load was driven from 1 to 15, and after a central-manager restart
+workers took roughly twice the interval to reappear, one cycle to discover their
+cached security session was dead and another to re-authenticate.
+
+Lowering it does not change how fast policy reacts. The startd evaluates its
+expressions every \kn{POLLING\_INTERVAL}, five seconds, regardless. The default
+made the policy invisible and re-registration slow. It did not make the policy
+slow.
+
+\subsection{Workload constraints}
+
+Eviction is the normal case in this design rather than an exception, and users
+have to be told so. Jobs should be many and short rather than few and long; they
+must be idempotent, restartable from scratch without corrupting state; long work
+should self-checkpoint. ``My job keeps restarting'' is a property of a desktop
+pool, not a bug.

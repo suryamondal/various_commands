@@ -1,7 +1,7 @@
-\chapter{Roadmap and open risks}
-\label{ch:roadmap}
+\section{Roadmap and open risks}
+\label{sec:limits}
 
-\section{Phases}
+\subsection{Phases}
 
 \begin{table}[H]
 \centering
@@ -28,7 +28,7 @@ whole design exists to satisfy. Proving it early de-risked everything after it:
 had remote submission turned out to be impractical, the rest of the work would
 have been wasted.
 
-\section{Phase 4 is blocked on a storage decision}
+\subsection{Phase 4 is blocked on a storage decision}
 
 JupyterHub with \kn{batchspawner} spawns each user's notebook kernel as a Condor
 job on a worker --- which is exactly the requirement that Jupyter be allowed but
@@ -43,7 +43,7 @@ notebooks must persist across sessions and across machines.
 
 That means an NFS export, and it is unprovisioned.
 
-\section{Heterogeneity, deferred to phase 5}
+\subsection{Heterogeneity, deferred to phase 5}
 
 \begin{table}[H]
 \centering
@@ -65,9 +65,9 @@ The architecture default is the right one: making ARM capacity opt-in means a
 user who has never thought about architecture cannot accidentally match a job to
 a machine that cannot run it.
 
-\section{Open risks}
+\subsection{Open risks}
 
-\subsection{Resolved}
+\subsubsection{Resolved}
 
 \begin{table}[H]
 \centering
@@ -75,17 +75,17 @@ a machine that cannot run it.
 \toprule
 \textbf{Item} & \textbf{Resolution} \\
 \midrule
-Two unroutable subnets in one pool & Solved via \kn{PRIVATE\_NETWORK\_*} with a derived, not configured, name (Chapter~\ref{ch:net}) \\
+Two unroutable subnets in one pool & Solved via \kn{PRIVATE\_NETWORK\_*} with a derived, not configured, name (Chapter~\ref{sec:mobility}) \\
 Role alias for the entry node & Retired. \kn{avahi-publish} is not interface-aware; a machine's own hostname is \\
 Policy drift between entry node and workers & Both run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it \\
 cgroup per-job enforcement does not work on the installed build & Resolved \emph{by decision}, not by fix. Per-job caps are not wanted on machines this size; \kn{CGROUP\_MEMORY\_LIMIT\_POLICY = none} makes the configuration honest about it \\
-Suspend, memory eviction, admission closure & Verified under load (Chapter~\ref{ch:validation}) \\
+Suspend, memory eviction, admission closure & Verified under load (Chapter~\ref{sec:eval}) \\
 \bottomrule
 \end{tabularx}
 \caption{Risks closed.}
 \end{table}
 
-\subsection{Accepted}
+\subsubsection{Accepted}
 
 \begin{table}[H]
 \centering
@@ -102,7 +102,7 @@ Disk-pressure eviction is untested & The expression composes correctly with the 
 \caption{Risks accepted with reasoning.}
 \end{table}
 
-\subsection{Open}
+\subsubsection{Open}
 
 \begin{table}[H]
 \centering
@@ -128,11 +128,11 @@ Off-LAN machines & mDNS is link-local. Deferred by decision \\
 \caption{Risks still open.}
 \end{table}
 
-\section{The next three things}
+\subsection{The next three things}
 
 \begin{enumerate}
   \item \textbf{Exercise disk-pressure eviction.} It is the only branch of
-        \kn{EVICT\_PRESSURE} never observed firing, and Chapter~\ref{ch:failure}
+        \kn{EVICT\_PRESSURE} never observed firing, and Chapter~\ref{sec:silent}
         is eleven arguments against assuming an unobserved branch works. Fill a
         scratch directory on the flagship worker until the floor is crossed.
         \emph{Deferred by decision, not forgotten.}

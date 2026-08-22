@@ -1,0 +1,66 @@
+\section{Related work}
+\label{sec:related}
+
+\subsection{Desktop grids and volunteer computing}
+
+Harvesting idle cycles from machines whose owners have first claim is a mature
+field. BOINC established the platform model, in which participants run a client
+that pulls work units and the scheduling model belongs to the platform; later
+systems such as Pando pursue the same goal in browsers with a declarative
+concurrent programming model. Intermittency and owner control are founding
+assumptions throughout, and the field has developed a substantial literature on
+tolerating them.
+
+The difference in emphasis is where the intermittency is handled. That
+literature addresses it at the \emph{application} layer, through checkpointing,
+replication and work-unit redundancy, and treats the network as a solved
+substrate because participants reach a central server outbound. This note
+addresses a case that model does not encounter: execute nodes that must be
+reachable \emph{inbound} while moving between subnets that cannot route to each
+other (\S\ref{sec:mobility}).
+
+\subsection{Requested versus actual resource usage}
+
+That jobs request far more than they use, and that this depresses utilisation,
+is well established in datacentre practice; published cluster traces and the
+right-sizing systems built on them treat over-request as the normal case rather
+than an anomaly. The usual remedy is to correct the \emph{request}, by
+recommending or automatically adjusting it from observed history.
+
+The finding in \S\ref{sec:ledger} is adjacent but distinct. The request is left
+alone, and the \emph{ledger derived from it} is replaced with a measurement, on
+the grounds that the reservation the ledger enforces is not being honoured in
+the first place. That is a narrower claim, and it is specific to a system whose
+per-job enforcement has been deliberately disabled, but it removes a gate that
+sits upstream of policy rather than adjusting an input to it.
+
+\subsection{Pressure stall information}
+
+PSI is a Linux kernel facility for quantifying time lost to resource contention,
+and its use in scheduling is established outside batch systems: container
+orchestrators expose it for node-level decisions, and Android's low-memory
+daemon uses it in place of an in-kernel killer precisely because it reacts
+faster than free-memory thresholds on constrained devices. The observation that
+a scheduler should prefer nodes with lower \emph{pressure} rather than lower
+\emph{utilisation} is not new.
+
+What appears not to be written down is its use inside a batch system's own
+policy expressions, where it competes with the load-average signal those systems
+have always used, and where the ten-second reaction window matters because a
+negotiation cycle can admit an entire burst inside one decay constant of a
+one-minute mean (\S\ref{sec:admission}).
+
+\subsection{HTCondor networking}
+
+The multi-homing mechanism this note relies on is documented: a daemon may
+advertise a public and a private address, and peers select between them by
+matching a configured private network name. The documentation is explicit that
+two addresses is the limit.
+
+What we did not find described is the consequence for machines that \emph{move}.
+Because the selection is made by the reader, a configured value is silently
+wrong the moment a machine changes segment, and the failure is not a refusal but
+a job that runs to completion and then cannot return its output
+(\S\ref{sec:mobility}). Deriving the value at startup from the collector's own
+advertisement, so that no machine holds a network fact, is the part of this work
+we believe to be unreported.

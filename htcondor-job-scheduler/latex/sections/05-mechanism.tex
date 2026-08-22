@@ -1,9 +1,9 @@
-\chapter{Mechanism selection: WANT\_SUSPEND}
-\label{ch:mechanism}
+\section{Mechanism selection: WANT\_SUSPEND}
+\label{sec:mechanism}
 
 This is the single most important knob in the policy, and the least obvious.
 
-\section{What it actually does}
+\subsection{What it actually does}
 
 \kn{WANT\_SUSPEND} does not enable or disable suspension. When the startd decides
 a job must go, it decides \textbf{which expression the startd consults}:
@@ -19,7 +19,7 @@ carefully-written \kn{SUSPEND} and a carefully-written \kn{PREEMPT} runs exactly
 one of them, and \kn{WANT\_SUSPEND} picks which.
 \end{keypoint}
 
-\section{Both failure modes, measured}
+\subsection{Both failure modes, measured}
 
 Both were found by stress test, and \textbf{neither was visible any other way}.
 \kn{condor\_config\_val} printed a correct expression throughout,
@@ -41,7 +41,7 @@ Constant \kn{True} & \kn{PREEMPT} never fires & Memory held \textbf{1.5\,GB belo
 The default is \kn{False}, which means a policy that defines \kn{SUSPEND} and
 never touches \kn{WANT\_SUSPEND} has a suspension rule that can never execute.
 
-\section{The resolution}
+\subsection{The resolution}
 
 It must be an \textbf{expression}, inverting on the pressure that suspension
 cannot relieve:
@@ -60,7 +60,7 @@ Read as a sentence: \emph{if the pressure is something freezing the job would
 relieve, freeze it; otherwise kill it.} CPU contention is relieved by
 \kn{SIGSTOP}. Memory pressure is not, because a stopped process keeps its RSS.
 
-\section{Observed behaviour}
+\subsection{Observed behaviour}
 
 Suspension and resumption, with the hysteresis gap doing its job:
 
@@ -83,7 +83,7 @@ The re-match at \kn{00:19:09} is correct behaviour, not a loop bug: the job
 returned to the queue, the negotiator found the machine still advertising
 capacity, and the policy evicted it again because the pressure had not lifted.
 
-\section{How to test this safely}
+\subsection{How to test this safely}
 
 \begin{trap}
 Do not drive a machine to genuine memory pressure to test a threshold ---

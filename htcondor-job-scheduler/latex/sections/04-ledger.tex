@@ -1,0 +1,126 @@
+\section{The reservation ledger is the real gate}
+\label{sec:ledger}
+
+Every term in \S\ref{sec:admission} is measured, and for a long time we believed
+that settled the question. It does not, because \kn{START} is not the first gate.
+
+The negotiator matches a job against the partitionable slot's advertised
+\kn{Memory} attribute. That attribute is a \textbf{ledger}: configured capacity
+minus what has already been promised to existing dynamic slots. It is not a
+measurement, and a job is rejected before \kn{START} is ever evaluated if the
+ledger says no.
+
+\subsection{Measured cost}
+
+On the sixteen-core, 31\,GB worker, running eight jobs that each \emph{requested}
+3\,GB and used essentially nothing:
+
+\begin{lstlisting}[style=term]
+TotalMemory                    26942       %% configured, less RESERVED_MEMORY
+8 dynamic slots x 3072      -  24576       %% promised
+                              ------
+advertised Memory               2366       %% machine refuses further work
+MemAvailable (real)            24589       %% ten times as much genuinely free
+\end{lstlisting}
+
+Eight of sixteen cores idle. The policy was fully permissive throughout:
+\kn{FITS\_MEM} evaluated \kn{3072 < 24589 - 7485}, which is true. The machine
+declined work that its own policy would have admitted, because the matchmaker
+never got far enough to ask.
+
+\begin{trap}
+This contradicts the rule the entire policy is built on. Admission was gated on
+accounting after all, one layer above where we were looking.
+\end{trap}
+
+\subsection{Why HTCondor does this}
+
+The ledger is not a defect in HTCondor. Its slot model is reservation-based:
+when a dynamic slot is carved, its allocation is a guarantee held for that
+slot's lifetime, whether the job touches it or not. Advertising measured free
+memory would let two jobs match the same physical gigabytes and make the promise
+to the first worthless.
+
+That guarantee is real in a pool where \kn{request\_memory} is enforced. It is
+\textbf{fictional here}, because \S\ref{sec:admission} disables enforcement
+deliberately: nothing stops a job asking 3\,GB and using 30. The deployment was
+therefore paying the full throughput cost of a reservation ledger while
+receiving none of the protection it exists to provide.
+
+\subsection{The attribute can be overridden}
+
+HTCondor's documentation describes the two-address and slot-attribute model in
+terms that suggest these values are the startd's to compute, and an earlier
+revision of this note stated plainly that \kn{Cpus} and \kn{Memory} ``cannot
+safely be overridden''. That was reasoned, never tested, and it is wrong.
+
+A \kn{STARTD\_CRON} job publishing \kn{Memory} overrides the computed value.
+The experiment carried a second attribute, \kn{MemOverrideProbe}, holding the
+same number under a name the startd does not compute. Without that control, an
+unchanged \kn{Memory} would have been ambiguous between \emph{the cron did not
+run} and \emph{the attribute is protected}.
+
+\begin{lstlisting}[style=term]
+before      Memory 11582   TotalMemory 26942   MemOverrideProbe undefined
+after       Memory 28122   TotalMemory 26942   MemOverrideProbe    28122
+\end{lstlisting}
+
+Both attributes carried the measured figure, and \kn{Memory} exceeded
+\kn{TotalMemory}, so the startd had accepted a value it did not compute.
+
+The second question is whether carving still works, and it does. Twelve jobs
+requesting 3\,GB each, pinned to that machine, ran \textbf{concurrently}:
+
+\begin{lstlisting}[style=term]
+12 dynamic slots carved      36864 MB of nominal requests
+TotalMemory                  26942 MB configured
+claim refusals                   0
+held jobs                        0
+Cpus                         16 -> 4, decremented correctly
+\end{lstlisting}
+
+Under the ledger the same submission stops at eight.
+
+\subsection{Publish headroom, not availability}
+
+The value published is \kn{MemAvailable} minus a floor, not \kn{MemAvailable}
+itself. The floor is
+\kn{max(soft floor, RESERVED\_MEMORY)}.
+
+Subtracting it is what keeps the advertisement agreeing with the policy.
+Advertising the raw figure would let a job match and then be refused by
+\kn{FITS\_MEM}, leaving it \st{Idle} against a machine that looks healthy, which
+is precisely the failure shape of \S\ref{sec:silent}. Taking the maximum of the
+two candidate floors is what lets one script be correct on every host: workers
+reserve about ten percent, so the soft floor dominates, while a machine that
+reserves more on purpose has its own reservation respected instead.
+
+\subsection{Workers only}
+
+The entry node keeps the ledger, and the script detects this itself rather than
+being deployed selectively, publishing nothing when \kn{SCHEDD} appears in
+\kn{DAEMON\_LIST}.
+
+Its failure is not local: if the schedd cannot fork shadows, nothing anywhere in
+the pool runs. The reservation also protects something real there, one shadow
+per running job pool-wide, which unlike a job's \kn{request\_memory} is not a
+guess. And its reservation is large by design, so a naive
+\kn{MemAvailable} minus twenty-five percent would have advertised roughly double
+what that machine is meant to offer. Detecting the role rather than configuring
+it keeps one file correct fleet-wide.
+
+\subsection{What this does not change}
+
+No guard is weakened. Every memory term in \kn{START} and \kn{PREEMPT} reads the
+cron's \kn{Host*} attributes, never the slot ad, so eviction behaves exactly as
+it did when it was observed firing eleven seconds after pressure began. It
+simply has more work to act on, and eviction becomes routine rather than rare.
+
+Two side effects are worth stating. The published value lands on every slot, so
+per-slot memory columns in \kn{condor\_status} stop being meaningful and only
+the parent slot should be read. And \kn{SLOT\_WEIGHT} must stay at its \kn{Cpus}
+default, or fair-share accounting would be computed from a number that no longer
+describes an allocation.
+
+Disk is deliberately left on the ledger. It is the one resource with no graceful
+degradation.

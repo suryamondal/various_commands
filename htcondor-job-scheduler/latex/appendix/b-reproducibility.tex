@@ -1,10 +1,46 @@
-\chapter{Verification commands}
-\label{app:verify}
+\section{Reproducibility}
+\label{app:repro}
+
+\subsection{Environment}
+
+Every measurement in this note comes from the pool described in
+\S\ref{sec:intro}. The relevant versions and shapes:
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.30\textwidth} Y}
+\toprule
+\textbf{Item} & \textbf{Value} \\
+\midrule
+HTCondor & 23.4.0, distribution packages, identical on every host \\
+Operating system & Ubuntu 24.04 LTS on x86\_64; Debian 13 on the edge SBC \\
+Entry node & 4 cores, 16\,GB, NVMe; collector, negotiator, schedd, limited startd \\
+Flagship worker & 16 threads, 31\,GB; the machine in \S\ref{sec:ledger} \\
+Desktops & 4 cores, 16\,GB, in daily use by their owners \\
+Network & Two subnets with no route between them, both reachable by wired and wireless \\
+Name resolution & mDNS, answered per interface; no DNS entries, no hosts files \\
+Transport & A single TCP port via \kn{condor\_shared\_port} \\
+Slot model & One partitionable slot per machine, \kn{cpus=100\%, mem=100\%, disk=100\%} \\
+Enforcement & \kn{CGROUP\_MEMORY\_LIMIT\_POLICY = none}; \kn{JOB\_RENICE\_INCREMENT = 10} \\
+Cadence & \kn{UPDATE\_INTERVAL} 30\,s; \kn{STARTD\_CRON} period 15\,s; \kn{POLLING\_INTERVAL} 5\,s \\
+\bottomrule
+\end{tabularx}
+\caption{Environment for all reported measurements.}
+\end{table}
+
+The measured attributes are supplied by a \kn{STARTD\_CRON} job that prints
+\kn{name = value} lines on stdout, which the startd merges into the machine
+ClassAd. HTCondor publishes no free-memory attribute of its own, so
+\kn{HostMemAvailMB}, \kn{HostCpuPsiAvg10} and the rest exist only because that
+job reads \file{/proc/meminfo} and \file{/proc/pressure/*}. Without it the
+configuration still parses and the policy is silently inert
+(\S\ref{sec:silent}).
+
 
 The checks that discriminate between a working policy and a dead one. Ordered by
 how often they were the one that mattered.
 
-\section{Is the policy actually live?}
+\subsection{Is the policy actually live?}
 
 \begin{lstlisting}[style=term]
 condor_status -af Name Start OwnerSessionActive HostMemAvailMB HostDiskAvailMB
@@ -14,7 +50,7 @@ Reads the \textbf{slot ad}. If a policy attribute is missing here, the policy is
 dead no matter what the configuration says. Allow one update interval, or force
 a fresh ad with \kn{condor\_reconfig}.
 
-\section{Why is this machine not taking work?}
+\subsection{Why is this machine not taking work?}
 
 \begin{lstlisting}[style=term]
 condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 \
@@ -24,7 +60,7 @@ condor_status -af Name Start TotalLoadAvg HostCpuPsiAvg10 \
 Every term in \kn{START} beside its threshold. A machine can show free slots and
 still decline work --- that is the design, not a fault.
 
-\section{What did the startd actually decide?}
+\subsection{What did the startd actually decide?}
 
 \begin{lstlisting}[style=term]
 grep -iE 'suspend|continue|changing activity|changing state' \
@@ -34,26 +70,26 @@ grep -iE 'suspend|continue|changing activity|changing state' \
 The only place claim refusals are recorded. \kn{Request to claim resource
 refused} and \kn{Claiming protocol failed} appear here and nowhere else.
 
-\section{Is the pool intact?}
+\subsection{Is the pool intact?}
 
 \begin{lstlisting}[style=term]
 condor_status -af Name State Activity TotalLoadAvg HostMemAvailMB Start
 condor_q -totals
 \end{lstlisting}
 
-\section{Did the configuration take?}
+\subsection{Did the configuration take?}
 
 \begin{lstlisting}[style=term]
 condor_config_val -v <KNOB>
 \end{lstlisting}
 
 \begin{trap}
-Necessary but far from sufficient. Every defect in Chapter~\ref{ch:failure}
+Necessary but far from sufficient. Every defect in \S\ref{sec:silent}
 printed a correct value here. The \kn{-v} flag at least reveals \emph{which} file
 in \file{config.d} won, which is its real use --- precedence bites.
 \end{trap}
 
-\section{Observing under load}
+\subsection{Observing under load}
 
 \begin{lstlisting}[style=term]
 cut -d' ' -f1 /proc/loadavg          # the real figure, not the collector's
@@ -70,7 +106,7 @@ and a half minutes while load was driven from 1 to 15.
 pool signing key to verify the caller's token, and only the entry node has it.
 \end{trap}
 
-\section{Load generation}
+\subsection{Load generation}
 
 Both generators must be self-terminating, with \kn{timeout} owning the deadline
 so nothing survives a dropped session.
@@ -93,7 +129,7 @@ time.sleep(int(sys.argv[2]))
 An untouched allocation is virtual only, and \kn{MemAvailable} would not move ---
 the test would appear to fail while never having applied any pressure.
 
-\section{Testing eviction without endangering the machine}
+\subsection{Testing eviction without endangering the machine}
 
 Raise the floor to meet the memory rather than driving the machine into genuine
 pressure. Override \textbf{both} expressions:

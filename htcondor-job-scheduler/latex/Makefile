@@ -1,4 +1,4 @@
-# Build the HTCondor pool report.
+# Build the technical note.
 #
 # Engine is pdflatex via latexmk (see latexmkrc). The build host has no xelatex
 # and no biber, so the document deliberately avoids fontspec and
@@ -22,7 +22,7 @@ MAIN      := main
 BUILD     := build
 PDF       := $(BUILD)/$(MAIN).pdf
 LOG       := $(BUILD)/$(MAIN).log
-SOURCES   := $(MAIN).tex preamble.tex $(wildcard chapters/*.tex) $(wildcard appendix/*.tex)
+SOURCES   := $(MAIN).tex preamble.tex $(wildcard sections/*.tex) $(wildcard appendix/*.tex)
 
 LATEXMK   := latexmk -pdf
 VIEWER    := $(shell command -v xdg-open || command -v open)

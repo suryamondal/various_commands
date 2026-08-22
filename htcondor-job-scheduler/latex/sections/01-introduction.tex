@@ -1,0 +1,86 @@
+\section{Introduction}
+\label{sec:intro}
+
+An office accumulates idle computation. Desktops sit at a few percent
+utilisation through the working day and at zero overnight; small machines bought
+for one task spend the rest of their lives idle. The aggregate is substantial,
+and none of it is reachable by anyone who needs compute.
+
+Batch systems solve exactly this, and HTCondor was built for the case: harvesting
+cycles from machines whose owners have first claim on them. The engine is not the
+problem. The problem is the interaction model that conventionally arrives with
+it.
+
+\begin{keypoint}
+The requirement that shaped every decision here is that users must never log
+into a submission host. Not because logging in is difficult, but because the
+moment it is required the batch system becomes a separate place people have to
+visit, with its own home directory, its own environment and its own files to
+copy back and forth, rather than an extension of the machine they already work
+on.
+\end{keypoint}
+
+That friction is what keeps shared clusters underused. A colleague with a script
+that would finish in ten minutes across a pool will run it for six hours locally
+rather than learn another machine's filesystem layout.
+
+\subsection{Why HTCondor}
+
+Desktop grids and volunteer computing systems are mature, and the field is
+large. The distinction that matters for this deployment is where generality
+sits. Volunteer computing platforms are typically built for one application or
+one group and generalised afterwards; participants run a client that pulls work
+units, and the scheduling model is the platform's own.
+
+HTCondor starts general. ClassAd matchmaking makes machine policy a first-class,
+user-editable expression rather than a platform behaviour. Owner priority is a
+founding feature rather than an addition. And it is indifferent to UID
+consistency across hosts, which matters here because the same login has a
+different UID on different machines.
+
+The alternatives fail on specifics rather than in principle. Slurm assumes a
+consistent user namespace across the cluster, which this fleet does not have.
+Kubernetes solves container orchestration for services, and its eviction model
+is driven by capacity pressure rather than by the arrival of a human at a
+keyboard. A dedicated cluster is the right answer when the hardware exists; the
+premise here is that the machines are already bought, already deployed, and
+already doing something else most of the time.
+
+The consequence is that this work is not the construction of a system. It is the
+discovery of which of an existing system's controls do what they claim, and the
+policy written on top of them.
+
+\subsection{Contributions}
+
+\begin{enumerate}
+  \item \textbf{Measurement-based admission control} for an opportunistic pool,
+        with every gating term drawn from \file{/proc} rather than from what
+        jobs claimed they would use, including Linux pressure stall information
+        as the signal that an owner is actually suffering
+        (\S\ref{sec:admission}).
+
+  \item \textbf{A demonstration that the reservation ledger, not the policy, is
+        the binding gate}, and that it can be replaced with measured headroom.
+        The matchmaker consults the advertised \kn{Memory} attribute before any
+        policy expression runs, so a machine whose jobs over-request refuses
+        work while idle. Measured before and after (\S\ref{sec:ledger}).
+
+  \item \textbf{Naming and addressing for execute nodes that move between
+        unroutable subnets}, where the worker holds no address, no network name
+        and no per-machine configuration, and derives at startup which of the
+        entry node's two advertised addresses it can reach
+        (\S\ref{sec:mobility}).
+
+  \item \textbf{A catalogue of eleven silent failures} sharing one shape, with a
+        structural account of why declarative policy systems produce that shape
+        and the verification discipline that follows (\S\ref{sec:silent}).
+\end{enumerate}
+
+\subsection{What was built}
+
+A four-machine pool spanning two subnets with no route between them: an entry
+node carrying the collector, negotiator, schedd and a limited startd; a
+sixteen-thread worker; and two four-core desktops in daily use by their owners,
+one of which is also the submit client for its owner's own jobs. Jobs submitted
+from a user's own desktop distribute across all four machines and return their
+output. All measurements in this note come from that pool.

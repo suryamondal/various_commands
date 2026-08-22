@@ -1,0 +1,108 @@
+\section{Measurement-based admission}
+\label{sec:admission}
+
+The policy is mandatory on every worker. Its trigger is local \emph{work}
+appearing rather than a human being detected. When the machine's own workload
+grows, Condor jobs suspend; if contention persists, they are evicted.
+
+\begin{lstlisting}
+NonCondorLoad = (TotalLoadAvg - TotalCondorLoadAvg)
+
+# TIER 1 - admission and suspension (costs nothing, loses nothing)
+START = (NonCondorLoad   < TotalCpus * 0.50)      # is the OWNER busy?
+     && (TotalLoadAvg    < TotalCpus * 0.90)      # is the MACHINE busy?
+     && (HostCpuPsiAvg10 < 20.0)                  # actual CPU stall, 10s window
+     && (HostMemAvailMB  > HostMemTotalMB  * 0.25)
+     && (HostDiskAvailMB > HostDiskTotalMB * 0.10)
+     && FITS_CPU && FITS_MEM && FITS_DISK         # does THIS job fit?
+
+WANT_SUSPEND = !(EVICT_PRESSURE)     # selects the mechanism - see section 5
+SUSPEND      = (NonCondorLoad > TotalCpus * 0.75)
+CONTINUE     = (NonCondorLoad < TotalCpus * 0.50)
+
+# TIER 2 - eviction (the only thing that discards work)
+PREEMPT = EVICT_PRESSURE =
+          (HostMemAvailMB > 0)
+       && (  (HostMemAvailMB  < max(1GB, HostMemTotalMB * 0.10))
+          || (HostMemPsiAvg10 > 10.0)
+          || (HostDiskAvailMB < HostDiskTotalMB * 0.05) )
+
+MaxJobRetirementTime = 0
+MachineMaxVacateTime = 30
+\end{lstlisting}
+
+\subsection{Accounting is an aspiration; measurement is not}
+
+\begin{keypoint}
+HTCondor's slot accounting is \textbf{request}-based. A job asking for one core
+may spawn eight threads; a job asking for 256\,MB may use 10\,GB. Sixteen
+``one-core'' jobs can saturate a sixteen-core machine while matchmaking still
+believes it is empty.
+\end{keypoint}
+
+Every term above comes from \file{/proc}. Nothing in it trusts what a job
+claimed it would use, because that number is an aspiration rather than a
+constraint. \S\ref{sec:ledger} shows that this is necessary but not sufficient,
+because a request-based gate still sits upstream of the whole expression.
+
+\subsection{The two load terms are not redundant}
+
+\kn{NonCondorLoad} subtracts Condor's own contribution and answers \emph{is the
+owner busy}. \kn{TotalLoadAvg} includes it and answers \emph{is the machine
+busy}. With only the first, a machine at load 60 driven entirely by Condor reads
+as idle and keeps admitting more: the owner stays perfectly protected while the
+machine drowns. \S\ref{sec:eval} shows this measured.
+
+\subsection{Pressure stall information}
+
+PSI is the signal that means \emph{the owner is suffering}. Free memory and load
+average are proxies. \file{/proc/pressure/*} measures the percentage of time
+tasks actually stalled waiting for a resource. A machine can report gigabytes
+available while thrashing, and load average is a decaying one-minute mean that
+lets a negotiation cycle admit an entire burst before it registers. PSI's
+\kn{avg10} window reacts in ten seconds.
+
+\subsection{Thresholds that travel}
+
+Fractions scale across machine sizes; the slack they leave does not. At a
+fraction of 0.25, a sixteen-core machine has 4.0 of headroom while a four-core
+machine has 1.0, and a desktop with a browser open already idles above that.
+Measured: a four-core desktop, otherwise idle, reported non-Condor load of
+\textbf{1.23} against a 1.0 threshold and refused every job it was offered while
+\kn{condor\_status} showed it healthy and \st{Unclaimed}. The values became 0.50
+to admit and 0.75 to suspend, with the gap as deliberate hysteresis.
+
+Memory floors need the same treatment in the other direction. Ten percent of a
+4\,GB single-board computer is 410\,MB, too little to avoid thrashing; twenty-five
+percent of a 30\,GB machine is 7.5\,GB, needlessly idle. One \kn{ifThenElse}
+expression covers both ends of the fleet.
+
+\subsection{Presence must not gate admission}
+
+An \kn{OwnerSessionActive} attribute is published and useful for diagnostics,
+and it is deliberately \emph{not} in \kn{START}. People do not log out. On any
+desktop the attribute reads true essentially forever, so gating admission on it
+makes the machine advertise its cores and refuse everything, permanently, which
+is indistinguishable in \kn{condor\_status} from a healthy idle machine.
+
+The policy reacts to local work rather than to a human existing. If the owner
+starts doing something, load and PSI catch it within seconds, and their mere
+presence costs them nothing because Condor jobs already yield the CPU instantly
+under \kn{JOB\_RENICE\_INCREMENT}.
+
+This surfaced only when the first machine that was both small and actually in
+use joined the pool. Servers and headless machines never expose it, which is
+why a pool tested only on spare hardware will ship this bug.
+
+\subsection{No per-job memory ceiling}
+
+\kn{CGROUP\_MEMORY\_LIMIT\_POLICY} is set to \kn{none}. The alternative enforces
+\kn{request\_memory} as an absolute per-job limit, so a job asking for 256\,MB is
+killed at 256\,MB with 14\,GB free. On machines of 4 to 16\,GB that forces
+everyone to over-request, wasting exactly the memory the fleet does not have,
+and turns honest requests into spurious failures.
+
+\kn{request\_memory} therefore stays a matchmaking figure only, and memory is
+protected system-wide by eviction instead. This decision is what makes the
+reservation ledger of \S\ref{sec:ledger} not merely costly but incoherent: the
+guarantee it exists to provide has already been given up.

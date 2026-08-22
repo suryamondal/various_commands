@@ -1,10 +1,10 @@
-\chapter{Policy expression reference}
+\section{Policy expression reference}
 \label{app:policy}
 
 The complete owner policy as deployed. Worker and entry node differ only where
 the schedd role requires it; those differences are marked.
 
-\section{Derived quantities}
+\subsection{Derived quantities}
 
 \begin{lstlisting}
 NonCondorLoad  = (TotalLoadAvg - TotalCondorLoadAvg)
@@ -22,7 +22,7 @@ DISK_SOFT_FLOOR = (HostDiskTotalMB * 0.10)     # entry node: 15000
 DISK_HARD_FLOOR = (HostDiskTotalMB * 0.05)     # entry node:  8000
 \end{lstlisting}
 
-\section{Fit tests}
+\subsection{Fit tests}
 
 \begin{lstlisting}
 FITS_MEM  = (TARGET.RequestMemory =?= UNDEFINED)
@@ -33,7 +33,7 @@ The \kn{=?=} guard is not optional. A job that specifies no
 \kn{request\_memory} yields \kn{UNDEFINED}, which without the guard would make
 the whole \kn{\&\&} chain non-true and silently refuse every unspecified job.
 
-\section{The policy}
+\subsection{The policy}
 
 \begin{lstlisting}
 EVICT_PRESSURE = (HostMemAvailMB > 0)
@@ -59,7 +59,7 @@ MachineMaxVacateTime = 30
 KILL                 = FALSE
 \end{lstlisting}
 
-\section{Supporting settings}
+\subsection{Supporting settings}
 
 \begin{lstlisting}
 UPDATE_INTERVAL            = 30      # default 300 - see chapter 3
@@ -70,11 +70,11 @@ PREEN_INTERVAL             = 3600    # default 86400 - see chapter 3
 PREEN_ARGS                 = -r
 \end{lstlisting}
 
-\section{Attributes published by STARTD\_CRON}
+\subsection{Attributes published by STARTD\_CRON}
 
 Condor publishes none of these itself. Without the cron stanza every expression
 above evaluates to \kn{UNDEFINED} and the entire policy is inert
-(\S\ref{sec:inert}).
+(\S\ref{sec:silent}).
 
 \begin{table}[H]
 \centering

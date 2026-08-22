@@ -1,5 +1,5 @@
-\chapter{Naming and networking}
-\label{ch:net}
+\section{Naming and networking}
+\label{sec:mobility}
 
 Nothing in the pool configuration names a machine or an IP address. Concrete
 values live outside version control.
@@ -20,7 +20,7 @@ Worker addresses & Advertised in each ClassAd & Condor dials them directly \\
 \caption{Naming layers and how each is resolved.}
 \end{table}
 
-\section{Why names, not addresses}
+\subsection{Why names, not addresses}
 
 Condor routes by \textbf{advertised address} --- the sinful string each daemon
 puts in its ClassAd --- and never by resolving a name at connect time.
@@ -32,7 +32,7 @@ Only the entry node must be findable by name, because every worker's
 \kn{CONDOR\_HOST} points at it.
 \end{keypoint}
 
-\section{Why the pool must have a domain}
+\subsection{Why the pool must have a domain}
 
 \kn{condor\_submit -remote} and \kn{condor\_q -name} call
 \kn{get\_full\_hostname()}, which \textbf{rejects any name without a dot}.
@@ -43,7 +43,7 @@ hard requirement rather than a tidiness preference.
 \kn{DEFAULT\_DOMAIN\_NAME = local} qualifies every name and stays resolvable
 through avahi via nsswitch (\kn{files mdns4\_minimal ... dns mdns4}).
 
-\section{A multi-homed entry node serving two unroutable networks}
+\subsection{A multi-homed entry node serving two unroutable networks}
 
 The pool spans two subnets that cannot route to each other, and machines move
 between them --- both networks have ethernet and wifi, and a machine parks
@@ -53,7 +53,7 @@ This works, using HTCondor's documented multi-homing support. An earlier revisio
 of this project's notes concluded it was impossible; that was wrong, and the
 correction is the substance of this section.
 
-\subsection{Why it looks impossible at first}
+\subsubsection{Why it looks impossible at first}
 
 \kn{BIND\_ALL\_INTERFACES} is true and the daemons listen on \kn{0.0.0.0:9618},
 so they \emph{accept} on every address. But a daemon advertises \textbf{one
@@ -97,7 +97,7 @@ Two obvious fixes do not work, both tested:
 Sinful strings are address-based by design: resolution happens once, at the
 advertiser, and every peer receives the same string.
 
-\subsection{What does work}
+\subsubsection{What does work}
 
 \kn{PRIVATE\_NETWORK\_NAME} and \kn{PRIVATE\_NETWORK\_INTERFACE}. The entry node
 publishes \textbf{both} addresses; a peer uses the private one if it declares a
@@ -117,7 +117,7 @@ The catch is that the choice is made by the \textbf{reader}. A hardcoded value o
 a worker is silently wrong the moment that machine moves --- which, in a fleet
 where machines move constantly, means it is wrong most of the time.
 
-\subsection{Deriving it instead of configuring it}
+\subsubsection{Deriving it instead of configuring it}
 
 \kn{PRIVATE\_NETWORK\_NAME} defaults to the machine's own \kn{FULL\_HOSTNAME},
 which can never match another machine's --- so the default already means
@@ -150,7 +150,7 @@ precisely the failure this mechanism exists to prevent.
 The derivation needs root, since querying the collector uses the daemon token in
 \file{/etc/condor/tokens.d/}; running it as \kn{ExecStartPre} satisfies that.
 
-\section{Why a role alias failed, and was retired}
+\subsection{Why a role alias failed, and was retired}
 
 The original design pointed configuration at the \emph{role} rather than at
 whichever machine currently held it. Moving the entry node would mean starting an
@@ -198,10 +198,10 @@ and stayed broken until it was next touched.
 That one failed loudly when finally exercised (\kn{Error: unknown host}), which
 is the good case. A \emph{worker} left in that state would have registered
 against nothing and looked healthy, which is the shape of every defect in
-Chapter~\ref{ch:failure}. Grep every host for the name being retired, including
+Chapter~\ref{sec:silent}. Grep every host for the name being retired, including
 hosts that run no daemons.
 
-\section{A VPN interface on a pool member is a hazard}
+\subsection{A VPN interface on a pool member is a hazard}
 \label{sec:vpn}
 
 Condor ranks candidate addresses by publicness and advertises the most public as
@@ -238,7 +238,7 @@ that entry-to-worker takes the direct path. The cost is that the line is wrong
 if the machine's attachment ever changes --- accepted, because the alternative is
 trusting a ranking that demonstrably picks wrong.
 
-\subsection{The pin only constrains IPv4}
+\subsubsection{The pin only constrains IPv4}
 
 Verified afterwards on the slot ad, which is the only place this is visible:
 
@@ -259,7 +259,7 @@ reach. \kn{ENABLE\_IPV6 = FALSE} closes it. \textbf{Check \kn{addrs=}, not
 just the primary.}
 \end{keypoint}
 
-\section{Why UID\_DOMAIN is deliberately different}
+\subsection{Why UID\_DOMAIN is deliberately different}
 
 \kn{UID\_DOMAIN} is a principal namespace and is never resolved as a hostname.
 Keeping it distinct from \kn{DEFAULT\_DOMAIN\_NAME} means the naming scheme can
@@ -272,7 +272,7 @@ authenticate, but map to a different principal --- silently splitting fair-share
 accounting rather than failing visibly.
 \end{trap}
 
-\section{Operational notes, learned the hard way}
+\subsection{Operational notes, learned the hard way}
 
 \begin{itemize}
   \item Changing \kn{DEFAULT\_DOMAIN\_NAME} or \kn{NETWORK\_HOSTNAME} changes
