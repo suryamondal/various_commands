@@ -11,39 +11,42 @@
     :root { --bg:#14161a; --fg:#e6e8ea; --muted:#9aa0a6; --rule:#2a2f36;
             --barbg:#232830; }
   }
-  body { background:var(--bg); color:var(--fg); margin:0 auto; max-width:1100px;
-         padding:1.5rem 1rem 4rem;
-         font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  h1 { font-size:1.15rem; margin:0 0 .2rem; }
-  .sub { color:var(--muted); font-size:.85rem; margin-bottom:1.4rem; }
-  table { border-collapse:collapse; width:100%; font-size:.88rem; }
+  /* This is a dashboard, not prose: tables and plots want width, and the
+     usual ~65ch readability cap makes it look like a phone page on a desktop.
+     Wide enough to use the screen, capped so it does not sprawl on ultrawides. */
+  body { background:var(--bg); color:var(--fg); margin:0 auto; max-width:1500px;
+         padding:1.6rem 1.6rem 4rem;
+         font:17px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  h1 { font-size:1.3rem; margin:0 0 .2rem; }
+  .sub { color:var(--muted); font-size:.88rem; margin-bottom:1.5rem; }
+  table { border-collapse:collapse; width:100%; font-size:.92rem; }
   th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--rule);
           white-space:nowrap; }
   td:first-child, th:first-child { padding-left:0; }
-  th { font-weight:600; font-size:.78rem; text-transform:uppercase;
+  th { font-weight:600; font-size:.8rem; text-transform:uppercase;
        letter-spacing:.03em; color:var(--muted); }
   /* Must match th as well as td: with td.num the body cells right-align while
      the headers stay left, so every numeric column has its label at one end
      and its value at the other. */
   .num { text-align:right; font-variant-numeric:tabular-nums; }
   th.num { padding-right:.5rem; }
-  .bar { display:block; height:.62rem; background:var(--barbg); border-radius:2px;
-         overflow:hidden; min-width:70px; }
+  .bar { display:block; height:.7rem; background:var(--barbg); border-radius:2px;
+         overflow:hidden; min-width:110px; }
   .bar > i { display:block; height:100%; background:var(--bar); }
   .no  { color:var(--warn); font-weight:600; }
   .tag { font-size:.7rem; color:var(--muted); border:1px solid var(--rule);
          border-radius:3px; padding:0 .3rem; margin-left:.35rem; }
-  .note { color:var(--muted); font-size:.82rem; margin:.8rem 0 2rem; }
-  h2 { font-size:.95rem; margin:2.2rem 0 .5rem; }
+  .note { color:var(--muted); font-size:.86rem; margin:.9rem 0 2rem; max-width:80ch; }
+  h2 { font-size:1.05rem; margin:2.4rem 0 .6rem; }
   .tabs { display:flex; gap:.4rem; margin:.2rem 0 .7rem; flex-wrap:wrap; }
-  .tabs button { font:inherit; font-size:.82rem; padding:.28rem .8rem; cursor:pointer;
+  .tabs button { font:inherit; font-size:.86rem; padding:.34rem .95rem; cursor:pointer;
                  color:var(--fg); background:transparent; border:1px solid var(--rule);
                  border-radius:3px; }
   .tabs button:hover { border-color:var(--muted); }
   .tabs button[aria-selected="true"] { background:var(--bar); border-color:var(--bar);
                                        color:#fff; font-weight:600; }
   img { width:100%; height:auto; border:1px solid var(--rule); border-radius:3px; }
-  .stamp { color:var(--muted); font-size:.75rem; margin-top:.25rem; }
+  .stamp { color:var(--muted); font-size:.78rem; margin-top:.35rem; max-width:80ch; }
 </style>
 
 <h1>pool status</h1>
