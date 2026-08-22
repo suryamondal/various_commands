@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>pool status</title>
+<title>SSSD-IOT : Condor Pool Status</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
@@ -36,7 +36,8 @@
   .no  { color:var(--warn); font-weight:600; }
   .tag { font-size:.7rem; color:var(--muted); border:1px solid var(--rule);
          border-radius:3px; padding:0 .3rem; margin-left:.35rem; }
-  .note { color:var(--muted); font-size:.86rem; margin:.9rem 0 2rem; max-width:80ch; }
+  .note { color:var(--muted); font-size:.86rem; margin:.9rem 0 2rem; }
+  .note b, .note .tag { color:var(--fg); }
   h2 { font-size:1.05rem; margin:2.4rem 0 .6rem; }
   .tabs { display:flex; gap:.4rem; margin:.2rem 0 .7rem; flex-wrap:wrap; }
   .tabs button { font:inherit; font-size:.86rem; padding:.34rem .95rem; cursor:pointer;
@@ -49,23 +50,21 @@
   .stamp { color:var(--muted); font-size:.78rem; margin-top:.35rem; max-width:80ch; }
 </style>
 
-<h1>pool status</h1>
+<h1>SSSD-IOT : Condor Pool Status</h1>
 <div class="sub" id="sub">loading&hellip;</div>
 
 <table>
   <thead><tr>
-    <th>machine</th><th>state</th><th>cores</th><th class="num">load</th>
+    <th>machine</th><th>cores</th><th class="num">load</th>
     <th>memory offered</th><th class="num">free</th><th>start</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
 
 <p class="note">
-  <strong>start = no</strong> means the machine is declining work by policy, not
-  that it is broken. Admission here is gated on measured load, memory and
-  pressure, so a machine can show free cores and still refuse jobs while its
-  owner is using it. <span class="tag">ledger</span> marks a machine that
-  advertises reserved capacity rather than measured headroom.
+  <b>start&nbsp;=&nbsp;no</b>: busy owner, not broken. &nbsp;
+  <b>suspended</b>: frozen, resumes itself. &nbsp;
+  <span class="tag">ledger</span>: reserved capacity, not measured.
 </p>
 
 <h2>who is using the pool</h2>
@@ -76,11 +75,7 @@
   </tr></thead>
   <tbody id="users"></tbody>
 </table>
-<p class="note">
-  Current demand per user. The stacked panel in each plot below shows the same
-  thing over time, so who consumed how much is read off the history rather than
-  from a running total.
-</p>
+<p class="note">Current demand. The stacked panel in the plot shows it over time.</p>
 
 <h2>history</h2>
 <div class="tabs" id="tabs">
@@ -89,11 +84,7 @@
   <button data-w="48h">48 hours</button>
 </div>
 <img id="plot" alt="pool history">
-<div class="stamp">
-  Plots are regenerated on a fixed schedule and served as static files, so they
-  update when you reload rather than while you watch. Only one is fetched, when
-  you pick it. The table above is the live part.
-</div>
+<div class="stamp">Plots regenerate on a schedule; reload to refresh. Tables above are live.</div>
 
 <script>
 // Only this table polls. The plots are static files on disk, so a viewer never
@@ -115,9 +106,9 @@ async function tick() {
       const memUsed = m.mem_total ? 1 - (m.mem_adv / m.mem_total) : 0;
       return '<tr>' +
         '<td>' + m.machine + (m.ledger ? '<span class="tag">ledger</span>' : '') + '</td>' +
-        '<td>' + m.state + '</td>' +
         '<td>' + bar(m.cpus_total ? used / m.cpus_total : 0) +
-          '<small>' + used.toFixed(0) + '/' + m.cpus_total.toFixed(0) + '</small></td>' +
+          '<small>' + used.toFixed(0) + '/' + m.cpus_total.toFixed(0) +
+          (m.suspended ? ' · ' + m.suspended + ' suspended' : '') + '</small></td>' +
         '<td class="num">' + m.load.toFixed(2) + '</td>' +
         '<td>' + bar(memUsed) +
           '<small>' + (m.mem_adv / 1024).toFixed(1) + ' GB offered</small></td>' +

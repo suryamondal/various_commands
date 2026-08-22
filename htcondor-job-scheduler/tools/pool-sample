@@ -123,6 +123,23 @@ def poll(pool):
 
     schedds = schedd_hosts(pool)
     rows, live = [], []
+    # Count SUSPENDED dynamic slots per machine before filtering them out.
+    #
+    # The partitionable parent is never claimed, so its State is Unclaimed/Idle
+    # whatever the machine is doing: running twelve jobs, refusing work, or
+    # sitting empty all look identical there. The one state that carries real
+    # information is Suspended, and it exists only on the children, which are
+    # otherwise dropped because they inherit the parent's published Memory.
+    suspended = {}
+    for line in raw.splitlines():
+        f = line.split()
+        if len(f) < len(ATTRS):
+            continue
+        d = dict(zip(ATTRS, f))
+        if "_" in d["Name"].split("@")[0] and d["Activity"] == "Suspended":
+            host = d["Name"].split("@")[-1].split(".")[0]
+            suspended[host] = suspended.get(host, 0) + 1
+
     for line in raw.splitlines():
         f = line.split()
         if len(f) < len(ATTRS):
@@ -145,7 +162,7 @@ def poll(pool):
         )
         rows.append(rec)
         rec2 = dict(rec)
-        rec2["state"] = d["State"] + "/" + d["Activity"]
+        rec2["suspended"] = suspended.get(short, 0)
         rec2["ledger"] = short in schedds
         live.append(rec2)
 
