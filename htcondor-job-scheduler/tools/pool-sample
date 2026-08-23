@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-ATTRS = ["Name", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
+ATTRS = ["Name", "Arch", "OpSysAndVer", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
          "TotalLoadAvg", "TotalCondorLoadAvg", "HostCpuPsiAvg10", "HostMemPsiAvg10",
          "HostMemAvailMB", "HostDiskAvailMB", "HostDiskTotalMB", "Start"]
 
@@ -164,6 +164,12 @@ def poll(pool):
         )
         rows.append(rec)
         rec2 = dict(rec)
+        # Identity is display-only, so it rides on the live record rather than
+        # into the samples table. It does not change while a machine is up, and
+        # storing a constant string once per 5s for 48h would be 34k copies of
+        # "Ubuntu24".
+        rec2["arch"] = d["Arch"].lower().replace("x86_64", "x86_64")
+        rec2["os"] = d["OpSysAndVer"]
         rec2["suspended"] = suspended.get(short, 0)
         rec2["ledger"] = short in schedds
         live.append(rec2)
