@@ -105,25 +105,23 @@ pool cannot tell them apart and does not need to.
 
 That settles what Jupyter costs here, and the answer is usually nothing.
 
-### Two architectures, routinely confused
+### The notebook stays where it is
 
-| | what moves | what it needs | when it wins |
-|---|---|---|---|
-| **Notebook submits** | jobs | nothing pool-side | almost always here |
-| **Kernel runs in the pool** | the kernel process | shared storage, interactive-safe machines | only when a pool machine is bigger than the user's |
+A notebook kernel is **one process on one machine**. It does not distribute, and
+hosting it somewhere else is a placement decision rather than a parallelism one.
+On a fleet of 4-core mini-PCs that placement is a downgrade: a laptop with
+twelve threads beats any of them.
 
-A notebook kernel is **one process on one machine**. Spawning it on a 4-core
-mini-PC makes it *slower* than a laptop with twelve threads, and no
-distribution happens at all. Moving the kernel into the pool is a placement
-decision, not a parallelism one. In this fleet it pays on exactly one machine,
-the 16-thread flagship, and later on a Jetson for its GPU.
-
-The architecture that actually uses a pool of small machines keeps the kernel
-wherever it already is and fans the *work* out. The kernel becomes a
-coordinator, cheap and single-threaded, while the parallelism lives in many
-short jobs. `dask-jobqueue`'s `HTCondorCluster`, `ipyparallel`, or the
+So the kernel stays on the user's own machine and the *work* fans out. The
+kernel is a coordinator, cheap and single-threaded, while the parallelism lives
+in many short jobs. `dask-jobqueue`'s `HTCondorCluster`, `ipyparallel`, or the
 `htcondor` Python bindings driving submission from a cell all do this. The
 bindings are already what `scripts/remote_submit.py` uses.
+
+**Hosted kernels are not a future phase here.** JupyterHub with `batchspawner`
+would put a long-lived, stateful, interactive process on a machine whose policy
+suspends it when its owner returns and kills it under memory pressure. That is
+not a storage problem to solve later; it is the wrong shape for this pool.
 
 ### Why that is the better fit, not merely the cheaper one
 
@@ -619,7 +617,7 @@ scaling limit — not CPU, not RAM.
 |---|---|
 | MB-scale jobs | `transfer_input_files`, indefinitely fine |
 | GB-scale jobs | shared storage + `FILESYSTEM_DOMAIN` so matched jobs skip transfer entirely |
-| Jupyter home dirs | Only if the *kernel* runs in the pool. A notebook that merely submits needs nothing — see section 4a |
+| Jupyter home dirs | Not applicable. A notebook here submits jobs; it does not run in the pool — see section 4a |
 
 The scaling answer is not transferring the data, not a bigger entry node.
 
@@ -948,7 +946,6 @@ policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
 | 1/2 | Add a second worker; daemon token; jobs distribute | **done** |
 | — | First user PC: worker + submit client, symmetric co-op proven | **done** |
 | 4 | Notebook as a submit client: bindings, `dask-jobqueue`, `ipyparallel` | not started, **nothing pool-side to build** |
-| 4b | JupyterHub + batchspawner CondorSpawner, for the flagship and GPUs only | not started, needs shared storage |
 | 5 | ARM workers; GPU discovery | not started |
 | 6 | Overlay VPN for off-LAN machines | deferred by decision |
 
@@ -1020,6 +1017,5 @@ interactive trust prompt. Check pool membership instead.
 | `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
 | Jetson GPU discovery | **Unverified** |
-| Shared storage for Jupyter homes | **Required only for phase 4b.** Phase 4 needs none |
 | `MAX_TRANSFER_INPUT_MB` | set to 2048 as a starting guard; unvalidated against real workloads |
 | Off-LAN machines | mDNS is link-local. Deferred by decision |

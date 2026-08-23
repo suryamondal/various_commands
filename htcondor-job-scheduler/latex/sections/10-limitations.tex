@@ -16,7 +16,6 @@
 --- & Multi-homing across two unroutable subnets & \textbf{done} \\
 --- & First user PC: worker \emph{and} submit client & \textbf{done} \\
 4 & Notebook as a submit client (bindings, \kn{dask-jobqueue}) & not started, nothing pool-side to build \\
-4b & Hosted kernels, for the flagship and GPUs only & not started, needs shared storage \\
 5 & ARM workers; GPU discovery & not started \\
 6 & Overlay VPN for off-LAN machines & deferred by decision \\
 \bottomrule
@@ -43,28 +42,22 @@ An earlier revision listed JupyterHub with \kn{batchspawner} as the next phase,
 blocked on shared storage for notebook home directories. That framing conflates
 two architectures which have almost nothing in common.
 
-\begin{table}[H]
-\centering
-\begin{tabularx}{\textwidth}{L{0.22\textwidth} L{0.16\textwidth} L{0.24\textwidth} Y}
-\toprule
-& \textbf{What moves} & \textbf{What it needs} & \textbf{When it wins} \\
-\midrule
-Notebook submits & jobs & nothing pool-side & almost always here \\
-Kernel hosted in the pool & the kernel process & shared storage, machines safe for interactive work & only when a pool machine is larger than the user's own \\
-\bottomrule
-\end{tabularx}
-\caption{Two architectures, routinely conflated.}
-\end{table}
+A notebook kernel is \textbf{one process on one machine}. It does not
+distribute, and hosting it elsewhere is a placement decision rather than a
+parallelism one. On a fleet of four-core mini-PCs that placement is a downgrade,
+since a laptop with twelve threads beats any of them.
 
-A notebook kernel is \textbf{one process on one machine}. Spawning it on a
-four-core mini-PC makes it slower than a laptop with twelve threads, and no
-distribution occurs at all. Hosting the kernel is a placement decision rather
-than a parallelism one, and in this fleet it pays on exactly one machine, the
-sixteen-thread worker, and later on a Jetson for its GPU.
+So the kernel stays on the user's own machine and the \emph{work} fans out. The
+kernel is a coordinator, cheap and single-threaded, while parallelism lives in
+many short jobs.
 
-The architecture that uses a pool of small machines leaves the kernel where it
-already is and fans the \emph{work} out. The kernel becomes a coordinator,
-cheap and single-threaded, while parallelism lives in many short jobs.
+\begin{keypoint}
+\textbf{Hosted kernels are not a deferred phase here.} JupyterHub with
+\kn{batchspawner} would place a long-lived, stateful, interactive process on a
+machine whose policy suspends it the moment its owner returns and kills it under
+memory pressure. That is not a storage problem to solve later. It is the wrong
+shape for this pool.
+\end{keypoint}
 
 \subsubsection{Why that is the better fit rather than merely the cheaper one}
 
@@ -155,7 +148,6 @@ Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Si
 Remote submit with no local Unix account & \textbf{Unverified.} The test user has an account on the entry node, and every submitter so far is that same user \\
 Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
 Jetson GPU discovery & \textbf{Unverified} \\
-Shared storage for hosted kernels & \textbf{Required for phase 4b only.} Phase 4 needs none (\S\ref{sec:notebooks}) \\
 \kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
 Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4, but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
 \kn{RANK} as the adoption lever & \textbf{In use}, untested under contention. No second identity has yet competed for that machine \\
