@@ -23,7 +23,7 @@
      baseline itself, which would leave it hanging below the descenders. */
   h1 { font-size:1.3rem; margin:0 0 .2rem; display:flex; align-items:center;
        gap:.6rem; }
-  .logo { height:1.9em; width:auto; flex:none; }
+  .logo { height:1.9em; width:auto; flex:none; border:0; }
   .sub { color:var(--muted); font-size:.88rem; margin-bottom:1.5rem; }
   table { border-collapse:collapse; width:100%; font-size:.92rem; }
   th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--rule);
@@ -52,7 +52,9 @@
   .tabs button:hover { border-color:var(--muted); }
   .tabs button[aria-selected="true"] { background:var(--bar); border-color:var(--bar);
                                        color:#fff; font-weight:600; }
-  img { width:100%; height:auto; border:1px solid var(--rule); border-radius:3px; }
+  /* Scoped to the plot. A bare img rule also caught the logo, which then
+     carried the plot's frame and had to be undone in .logo. */
+  #plot { width:100%; height:auto; border:1px solid var(--rule); border-radius:3px; }
   .stamp { color:var(--muted); font-size:.78rem; margin-top:.35rem; max-width:80ch; }
 </style>
 
