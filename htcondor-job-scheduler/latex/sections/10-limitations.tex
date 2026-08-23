@@ -15,7 +15,8 @@
 1/2 & Second and third workers; daemon tokens; jobs distribute & \textbf{done} \\
 --- & Multi-homing across two unroutable subnets & \textbf{done} \\
 --- & First user PC: worker \emph{and} submit client & \textbf{done} \\
-4 & JupyterHub with \kn{batchspawner} CondorSpawner & not started \\
+4 & Notebook as a submit client (bindings, \kn{dask-jobqueue}) & not started, nothing pool-side to build \\
+4b & Hosted kernels, for the flagship and GPUs only & not started, needs shared storage \\
 5 & ARM workers; GPU discovery & not started \\
 6 & Overlay VPN for off-LAN machines & deferred by decision \\
 \bottomrule
@@ -28,20 +29,57 @@ whole design exists to satisfy. Proving it early de-risked everything after it:
 had remote submission turned out to be impractical, the rest of the work would
 have been wasted.
 
-\subsection{Phase 4 is blocked on a storage decision}
-
-JupyterHub with \kn{batchspawner} spawns each user's notebook kernel as a Condor
-job on a worker, which is exactly the requirement that Jupyter be allowed but
-never run on the entry node.
+\subsection{Notebooks, and what the pool owes them}
+\label{sec:notebooks}
 
 \begin{keypoint}
-It is blocked on a decision that is not a Condor question: \textbf{where notebook
-home directories live}. Every user needs the same path visible on whichever
-worker their kernel lands on. Scratch sandboxes evaporate when the job ends, and
-notebooks must persist across sessions and across machines.
+The pool is a service with one interface, and everything above it is the
+client's problem. A submit file, a shell script and a notebook cell calling the
+Python bindings arrive at the schedd as identical ClassAds. The pool cannot
+tell them apart and does not need to.
 \end{keypoint}
 
-That means an NFS export, and it is unprovisioned.
+An earlier revision listed JupyterHub with \kn{batchspawner} as the next phase,
+blocked on shared storage for notebook home directories. That framing conflates
+two architectures which have almost nothing in common.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{L{0.22\textwidth} L{0.16\textwidth} L{0.24\textwidth} Y}
+\toprule
+& \textbf{What moves} & \textbf{What it needs} & \textbf{When it wins} \\
+\midrule
+Notebook submits & jobs & nothing pool-side & almost always here \\
+Kernel hosted in the pool & the kernel process & shared storage, machines safe for interactive work & only when a pool machine is larger than the user's own \\
+\bottomrule
+\end{tabularx}
+\caption{Two architectures, routinely conflated.}
+\end{table}
+
+A notebook kernel is \textbf{one process on one machine}. Spawning it on a
+four-core mini-PC makes it slower than a laptop with twelve threads, and no
+distribution occurs at all. Hosting the kernel is a placement decision rather
+than a parallelism one, and in this fleet it pays on exactly one machine, the
+sixteen-thread worker, and later on a Jetson for its GPU.
+
+The architecture that uses a pool of small machines leaves the kernel where it
+already is and fans the \emph{work} out. The kernel becomes a coordinator,
+cheap and single-threaded, while parallelism lives in many short jobs.
+
+\subsubsection{Why that is the better fit rather than merely the cheaper one}
+
+It removes by construction every problem that made a hosted kernel awkward. No
+shared home directories, because nothing durable lives on a worker. No
+long-lived kernel to suspend, so \kn{SUSPEND} never freezes a cell somebody is
+watching. No interactive process parked on a colleague's desktop. And the
+submitted jobs are short and idempotent, which is what the owner policy of
+\S\ref{sec:admission} was written for.
+
+The constraint runs the other way instead. Eviction is routine here, so whatever
+a notebook submits must be restartable: a cell fanning out two hundred short
+self-contained jobs fits the pool, and a cell submitting one eight-hour job that
+holds state does not, however it was submitted. That is a property of the work
+rather than of the front end.
 
 \subsection{Heterogeneity, deferred to phase 5}
 
@@ -117,7 +155,7 @@ Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Si
 Remote submit with no local Unix account & \textbf{Unverified.} The test user has an account on the entry node, and every submitter so far is that same user \\
 Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
 Jetson GPU discovery & \textbf{Unverified} \\
-Shared storage for Jupyter homes & \textbf{Required, unprovisioned} \\
+Shared storage for hosted kernels & \textbf{Required for phase 4b only.} Phase 4 needs none (\S\ref{sec:notebooks}) \\
 \kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
 Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4, but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
 \kn{RANK} as the adoption lever & \textbf{In use}, untested under contention. No second identity has yet competed for that machine \\

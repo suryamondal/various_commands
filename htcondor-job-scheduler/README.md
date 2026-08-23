@@ -34,7 +34,7 @@ untracked — this document names machine *classes* only.
 | Users never log into the entry node | remote submit only; no shells, no home dirs on entry |
 | Users' own **desktops** are also workers | pool is a symmetric co-op, not a donated cluster. **Laptops may be submit-only** — see section 2 |
 | Owner always wins on their own machine | preemption policy + machine RANK are mandatory, not optional |
-| Jupyter allowed, but never on the entry node | notebooks spawn as Condor jobs on workers |
+| Jupyter allowed, but never on the entry node | a notebook is a **submit client**; see section 4a |
 | Mixed hardware | two architectures, three distros, some GPUs |
 
 ## 2. Roles
@@ -95,6 +95,54 @@ Requirements: `SPOOL` on NVMe; half its cores donated to compute, the rest reser
 Distros: Ubuntu 24.04 LTS on x86_64; Debian 13 on the edge SBC; L4T expected on
 Jetsons. The same login has a different UID on different hosts — irrelevant to
 Condor, fatal to Slurm.
+
+## 4a. Notebooks, and what the pool owes them
+
+**The pool is a service with one interface. Everything above it is the client's
+problem.** A `.sub` file, a shell script, `tools/pool-run` and a notebook cell
+calling the Python bindings all arrive at the schedd as identical ClassAds. The
+pool cannot tell them apart and does not need to.
+
+That settles what Jupyter costs here, and the answer is usually nothing.
+
+### Two architectures, routinely confused
+
+| | what moves | what it needs | when it wins |
+|---|---|---|---|
+| **Notebook submits** | jobs | nothing pool-side | almost always here |
+| **Kernel runs in the pool** | the kernel process | shared storage, interactive-safe machines | only when a pool machine is bigger than the user's |
+
+A notebook kernel is **one process on one machine**. Spawning it on a 4-core
+mini-PC makes it *slower* than a laptop with twelve threads, and no
+distribution happens at all. Moving the kernel into the pool is a placement
+decision, not a parallelism one. In this fleet it pays on exactly one machine,
+the 16-thread flagship, and later on a Jetson for its GPU.
+
+The architecture that actually uses a pool of small machines keeps the kernel
+wherever it already is and fans the *work* out. The kernel becomes a
+coordinator, cheap and single-threaded, while the parallelism lives in many
+short jobs. `dask-jobqueue`'s `HTCondorCluster`, `ipyparallel`, or the
+`htcondor` Python bindings driving submission from a cell all do this. The
+bindings are already what `scripts/remote_submit.py` uses.
+
+### Why that is the better fit, not merely the cheaper one
+
+It sidesteps every problem that made a hosted kernel awkward, and it does so by
+construction rather than by mitigation:
+
+- No shared home directories, because nothing durable lives on a worker.
+- No long-lived kernel to suspend, so `SUSPEND` never freezes a cell someone is
+  watching.
+- No interactive process parked on a colleague's desktop.
+- The submitted jobs are short and idempotent, which is what the owner policy
+  was written for.
+
+### The constraint that flows back to the client
+
+Eviction is normal here, so whatever a notebook submits must be restartable. A
+cell that fans out 200 short self-contained jobs fits the pool. A cell that
+submits one eight-hour job holding state does not, however it was submitted.
+That is a property of the work, not of the front end.
 
 ## 5. Resource donation
 
@@ -571,7 +619,7 @@ scaling limit — not CPU, not RAM.
 |---|---|
 | MB-scale jobs | `transfer_input_files`, indefinitely fine |
 | GB-scale jobs | shared storage + `FILESYSTEM_DOMAIN` so matched jobs skip transfer entirely |
-| Jupyter home dirs | NFS export required — scratch sandboxes evaporate, notebooks must persist across sessions and across workers |
+| Jupyter home dirs | Only if the *kernel* runs in the pool. A notebook that merely submits needs nothing — see section 4a |
 
 The scaling answer is not transferring the data, not a bigger entry node.
 
@@ -899,7 +947,8 @@ policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
 | — | Contention-driven owner policy on the entry node | **done** |
 | 1/2 | Add a second worker; daemon token; jobs distribute | **done** |
 | — | First user PC: worker + submit client, symmetric co-op proven | **done** |
-| 4 | JupyterHub + batchspawner CondorSpawner | not started |
+| 4 | Notebook as a submit client: bindings, `dask-jobqueue`, `ipyparallel` | not started, **nothing pool-side to build** |
+| 4b | JupyterHub + batchspawner CondorSpawner, for the flagship and GPUs only | not started, needs shared storage |
 | 5 | ARM workers; GPU discovery | not started |
 | 6 | Overlay VPN for off-LAN machines | deferred by decision |
 
@@ -971,6 +1020,6 @@ interactive trust prompt. Check pool membership instead.
 | `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
 | Jetson GPU discovery | **Unverified** |
-| Shared storage for Jupyter homes | **Required, unprovisioned** |
+| Shared storage for Jupyter homes | **Required only for phase 4b.** Phase 4 needs none |
 | `MAX_TRANSFER_INPUT_MB` | set to 2048 as a starting guard; unvalidated against real workloads |
 | Off-LAN machines | mDNS is link-local. Deferred by decision |
