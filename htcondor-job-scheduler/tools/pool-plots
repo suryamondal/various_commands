@@ -32,7 +32,7 @@ from datetime import datetime
 
 BG, FG, GRID = "#FFFFFF", "#1A1A1A", "#D8DCE0"
 C_LOAD, C_OWNER, C_MEM = "#1F4E79", "#B5761F", "#4C8C4A"
-C_RUN, C_IDLE, C_DECLINE = "#1F4E79", "#9AA0A6", "#F2D8D8"
+C_RUN, C_IDLE = "#1F4E79", "#9AA0A6"
 # Categorical, for stacking one band per user. Chosen to stay distinguishable
 # in greyscale as well, since these plots get printed and pasted into mail.
 C_USERS = ["#1F4E79", "#B5761F", "#4C8C4A", "#8B2E2E",
@@ -85,20 +85,6 @@ def load(db, minutes):
     return per, q, users, [t[0] for t in stamps]
 
 
-def shade_declines(ax, rows):
-    """Shade contiguous spans where START was false."""
-    span = None
-    for r in rows:
-        t, start = datetime.fromtimestamp(r[0]), r[5]
-        if not start and span is None:
-            span = t
-        elif start and span is not None:
-            ax.axvspan(span, t, color=C_DECLINE, zorder=0, linewidth=0)
-            span = None
-    if span is not None and rows:
-        ax.axvspan(span, datetime.fromtimestamp(rows[-1][0]),
-                   color=C_DECLINE, zorder=0, linewidth=0)
-
 
 def render(db, out, minutes, name, title, fmt="svg"):
     per, q, users, ustamps = load(db, minutes)
@@ -147,7 +133,6 @@ def render(db, out, minutes, name, title, fmt="svg"):
         if not rows:
             continue
         t = [datetime.fromtimestamp(r[0]) for r in rows]
-        shade_declines(ax, rows)
         ax.plot(t, [r[1] for r in rows], color=C_LOAD, lw=1.1, label="load")
         ax.plot(t, [r[1] - r[2] for r in rows], color=C_OWNER, lw=1.0, label="owner load")
         cores = rows[-1][6] or 0

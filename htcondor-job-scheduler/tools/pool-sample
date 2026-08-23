@@ -239,17 +239,33 @@ def main():
         rows, counts, live, users = poll(a.pool)
         if rows:
             db.executemany(
-                "INSERT OR REPLACE INTO samples VALUES (:ts,:machine,:cpus_total,"
-                ":cpus_free,:load,:condor_load,:mem_adv,:mem_total,:mem_avail,"
-                ":disk_avail,:disk_total,:cpu_psi,:mem_psi,:start)",
+                # Columns are NAMED, not positional.
+                #
+                # ALTER TABLE ADD COLUMN appends to the end of the table, so a
+                # migrated database does not have the column order the CREATE
+                # statement declares. A positional VALUES list then silently
+                # writes every value after the insertion point one column off:
+                # start received cpu_psi and read as false, which made the plots
+                # claim the whole pool was refusing work for hours while
+                # live.json, which does not go through the database, was correct.
+                # Naming the columns costs nothing and cannot drift.
+                "INSERT OR REPLACE INTO samples "
+                "(ts,machine,cpus_total,cpus_free,load,condor_load,"
+                " mem_adv,mem_total,mem_avail,disk_avail,disk_total,"
+                " cpu_psi,mem_psi,start) "
+                "VALUES (:ts,:machine,:cpus_total,:cpus_free,:load,:condor_load,"
+                ":mem_adv,:mem_total,:mem_avail,:disk_avail,:disk_total,"
+                ":cpu_psi,:mem_psi,:start)",
                 [dict(r, ts=ts) for r in rows])
-            db.execute("INSERT OR REPLACE INTO queue VALUES (?,?,?,?,?)",
+            db.execute("INSERT OR REPLACE INTO queue "
+                       "(ts,running,idle,held,completed) VALUES (?,?,?,?,?)",
                        (ts, counts["running"], counts["idle"],
                         counts["held"], counts["completed"]))
             if users:
                 db.executemany(
-                    "INSERT OR REPLACE INTO user_jobs VALUES (:ts,:user,:running,"
-                    ":idle,:held,:req_cpus,:req_mem_mb)",
+                    "INSERT OR REPLACE INTO user_jobs "
+                    "(ts,user,running,idle,held,req_cpus,req_mem_mb) "
+                    "VALUES (:ts,:user,:running,:idle,:held,:req_cpus,:req_mem_mb)",
                     [dict(u, ts=ts) for u in users])
             db.commit()
 
