@@ -1,0 +1,85 @@
+#!/bin/sh
+# Restart condor when the collector is reachable but does not know this machine.
+#
+# THE FAILURE THIS EXISTS FOR
+# A startd that comes up while the collector is unreachable can stay absent
+# indefinitely. Observed: a worker booted while the entry node was on the wrong
+# subnet, failed to register, and was still missing five hours later despite a
+# 30s update interval. A manual restart fixed it immediately.
+#
+# Nothing else catches this. The NetworkManager hook fires on THIS machine's
+# addressing changing, and here it did not: the entry node moved. The startd
+# looks healthy the whole time, systemctl says active, and the only symptom is
+# absence from a list on another machine.
+#
+# THE DISCRIMINATION THAT MAKES IT SAFE
+# "I cannot see the collector" and "the collector cannot see me" need opposite
+# responses, and confusing them turns a pool-wide outage into a restart storm:
+#
+#   query fails        the collector is down or unreachable. NOT our problem,
+#                      and restarting would add load to an already broken pool
+#                      while every worker did the same thing. Do nothing.
+#
+#   query succeeds,    the collector is fine and has no record of us. We are
+#   we are absent      the broken party. Restart.
+#
+# Two consecutive failures are required before acting, so a single missed update
+# or a collector restarting mid-query does not bounce a working machine.
+#
+# It also gives up. If restarting has not helped after a few attempts, the cause
+# is not something a restart fixes, and a service that restarts itself forever
+# is harder to diagnose than one that stops and says so.
+#
+# Install: /usr/local/bin/condor-registration-watchdog (root, 0755)
+# Driven by: condor-registration-watchdog.timer
+
+STATE=/var/lib/condor-registration-watchdog
+MAX_RESTARTS=3
+
+systemctl is-active --quiet condor || exit 0
+
+ME=$(condor_config_val FULL_HOSTNAME 2>/dev/null)
+[ -n "$ME" ] || exit 0
+
+# Do not judge a daemon that has not had time to register.
+STARTED=$(systemctl show condor -p ActiveEnterTimestampMonotonic --value 2>/dev/null)
+NOW=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime 2>/dev/null)
+if [ -n "$STARTED" ] && [ -n "$NOW" ] && [ "$STARTED" -gt 0 ]; then
+    [ $(( (NOW - STARTED) / 1000000 )) -lt 180 ] && exit 0
+fi
+
+FAILS=$(cut -d' ' -f1 "$STATE" 2>/dev/null); FAILS=${FAILS:-0}
+RESTARTS=$(cut -d' ' -f2 "$STATE" 2>/dev/null); RESTARTS=${RESTARTS:-0}
+
+LIST=$(condor_status -af Machine 2>/dev/null)
+if [ -z "$LIST" ]; then
+    # Collector unreachable. Not this machine's fault; clear the counter so a
+    # pool outage does not accumulate toward a restart.
+    printf '0 %s\n' "$RESTARTS" > "$STATE" 2>/dev/null
+    exit 0
+fi
+
+if printf '%s\n' "$LIST" | grep -qx "$ME"; then
+    printf '0 0\n' > "$STATE" 2>/dev/null      # registered: reset everything
+    exit 0
+fi
+
+FAILS=$((FAILS + 1))
+if [ "$FAILS" -lt 2 ]; then
+    printf '%s %s\n' "$FAILS" "$RESTARTS" > "$STATE" 2>/dev/null
+    exit 0
+fi
+
+if [ "$RESTARTS" -ge "$MAX_RESTARTS" ]; then
+    logger -t condor-registration-watchdog -p daemon.err \
+        "collector is reachable but does not list $ME, and $RESTARTS restarts have not fixed it; giving up, needs a human"
+    printf '%s %s\n' "$FAILS" "$RESTARTS" > "$STATE" 2>/dev/null
+    exit 0
+fi
+
+RESTARTS=$((RESTARTS + 1))
+logger -t condor-registration-watchdog \
+    "collector reachable but $ME absent from it; restarting condor (attempt $RESTARTS of $MAX_RESTARTS)"
+printf '0 %s\n' "$RESTARTS" > "$STATE" 2>/dev/null
+systemctl restart condor
+exit 0

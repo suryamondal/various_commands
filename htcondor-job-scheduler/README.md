@@ -942,6 +942,44 @@ together after any entry-node restart. The evidence lives in `CollectorLog`
 (`SECMAN: Invalidating negotiated session rejected by peer`). Restarting condor
 on a worker clears its sessions and re-registers it immediately.
 
+### A worker that starts against an unreachable collector may never recover
+
+The self-healing above covers a collector that restarts under workers that are
+already registered. It does **not** cover a worker that comes up while the
+collector is unreachable.
+
+Observed: a worker booted while the entry node was on the wrong subnet, failed
+to register, and was still missing **five hours later** despite a 30s update
+interval. A manual restart fixed it in seconds.
+
+Nothing else catches this. The NetworkManager hook fires on *this machine's*
+addressing changing, and here it did not - the entry node moved. `systemctl`
+reports the service active, the startd process is running, and the only symptom
+is absence from a list on another machine.
+
+`condor-registration-watchdog` closes it. Every five minutes it asks one
+question, and the discrimination is the whole safety argument:
+
+| result | meaning | action |
+|---|---|---|
+| query fails | collector down or unreachable | **nothing** - not this machine's fault |
+| query succeeds, machine absent | collector is fine and has no record of us | restart |
+
+Confusing those turns a pool-wide outage into a restart storm, with every worker
+bouncing condor against an already-broken collector.
+
+Two consecutive failures are required before acting, so a single missed update
+does not bounce a working machine, and the worst case is ~10 minutes of absence
+rather than five hours. It gives up after three restarts and logs at
+`daemon.err`, because if a restart has not fixed it the cause is not something
+restarts fix, and a service that restarts itself forever is harder to diagnose
+than one that stops and says so. `RandomizedDelaySec` staggers the timers so a
+recovering pool does not see every worker restart on the same second.
+
+**Workers only.** The entry node's startd registers with a collector on the same
+machine, so a failure there is a different problem, and restarting condor to fix
+one slot would disrupt every worker in the pool.
+
 ### Startup ordering must be enforced, not assumed
 
 `CONDOR_HOST` is an mDNS name published by the alias service. At boot both
@@ -1031,6 +1069,7 @@ interactive trust prompt. Check pool membership instead.
 | **Entry node SPOOL shares an 86%-full volume with the OS**, along with EXECUTE and `job_queue.log` | **Mitigated, not fixed.** Transfer caps and disk tiers are the whole defence. The structural fix is SPOOL on its own filesystem, where exhausting it degrades the pool instead of destroying the machine |
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
+| A worker starting against an unreachable collector never re-registers | **Mitigated** by `condor-registration-watchdog` on all three workers. Armed and proven inert against healthy machines; the failure path awaits a natural occurrence |
 | **Disk-pressure eviction is untested** - it would mean filling the volume that also holds the schedd's queue | **Accepted.** The expression composes correctly with the entry node's absolute floors, but has not been exercised |
 | Suspend, memory eviction, and admission closure under real load | **Verified** (section 6a) |
 | `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |

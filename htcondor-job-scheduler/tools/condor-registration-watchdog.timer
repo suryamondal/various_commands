@@ -1,0 +1,22 @@
+# Every five minutes. The watchdog needs two consecutive failures before acting,
+# so the worst case is roughly ten minutes of absence before a restart. That is
+# far better than the five hours observed, and slow enough that a collector
+# blinking does not bounce a working machine.
+#
+# RandomizedDelaySec matters with more than a handful of workers: without it
+# every machine queries the collector on the same second, and a pool recovering
+# from an outage would see all of them restart together.
+#
+# Install: /etc/systemd/system/condor-registration-watchdog.timer
+[Unit]
+Description=Periodic check that condor is registered
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+RandomizedDelaySec=60
+AccuracySec=10s
+Unit=condor-registration-watchdog.service
+
+[Install]
+WantedBy=timers.target

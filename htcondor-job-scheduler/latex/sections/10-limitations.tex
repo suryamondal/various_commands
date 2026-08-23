@@ -125,6 +125,7 @@ Suspend, memory eviction, admission closure & Verified under load (Chapter~\ref{
 \textbf{Item} & \textbf{Why it is accepted} \\
 \midrule
 A central-manager restart removes every worker for $\sim$10 minutes & Self-heals; invisible in \kn{condor\_status}. Lower \kn{UPDATE\_INTERVAL} if the window matters \\
+A worker starting against an unreachable collector never re-registers & \textbf{Mitigated.} A watchdog on each worker restarts condor when the collector is reachable but does not list the machine. Armed and proven inert against healthy machines; the failure path awaits a natural occurrence \\
 Memory eviction is only as fresh as the cron period (20\,s) & A job can allocate hard within that window. The kernel OOM killer is the backstop, and it may pick the wrong victim \\
 A job can stay suspended indefinitely on a persistently busy machine & Accepted deliberately: it holds its claim and RSS but no CPU, and resumes when load drops. If it becomes a problem the fix is a cap on suspended time, not a shorter \kn{PREEMPT} \\
 Disk-pressure eviction is untested & The expression composes correctly with the entry node's absolute floors, but has not been exercised. Testing it means filling the volume that holds the schedd's queue \\
@@ -167,9 +168,10 @@ Off-LAN machines & mDNS is link-local. Deferred by decision \\
         is eleven arguments against assuming an unobserved branch works. Fill a
         scratch directory on the flagship worker until the floor is crossed.
         \emph{Deferred by decision, not forgotten.}
-  \item \textbf{Give workers the name-resolution guard.} The self-correction path
-        exists, but the window is real and lands hardest on the machine most
-        likely to move.
+  \item \textbf{Give workers the name-resolution guard.} A watchdog now
+        restarts a worker that the collector cannot see, which bounds the
+        damage, but it acts after roughly ten minutes rather than preventing
+        the window.
   \item \textbf{Decide the isolation model.} It is cheap now and expensive later,
         and it gates how far the pool can grow beyond people who already trust
         each other. Now that the pool runs on colleagues' own desktops rather

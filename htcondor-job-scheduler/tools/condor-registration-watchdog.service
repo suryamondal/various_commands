@@ -1,0 +1,12 @@
+# Restarts condor when the collector is reachable but does not know this
+# machine. See /usr/local/bin/condor-registration-watchdog for why that
+# distinction is the whole safety argument.
+#
+# Install: /etc/systemd/system/condor-registration-watchdog.service
+[Unit]
+Description=Restart condor if it is not registered with the collector
+After=condor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/condor-registration-watchdog
