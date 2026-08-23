@@ -17,3 +17,9 @@ latex/build/
 
 # Job scratch and test runs. Working area, never tracked.
 run/
+
+# Branding is supplied at deploy time and lives only on the machine that serves
+# it. The dashboard reads /var/lib/pool-web/www, a copy rather than a mount, so
+# nothing on the site depends on this repository. Keeping a company mark in a
+# public repo would buy nothing that tools/pool-web/README does not.
+tools/pool-web/*.png

@@ -1,0 +1,29 @@
+Branding is not in this repository.
+
+The page references three files that are supplied at deploy time and are
+gitignored:
+
+    logo.png              shown left of the heading, any aspect, ~400px wide is fine
+    favicon.png           32x32, browser tab
+    apple-touch-icon.png  180x180, iOS home screen
+
+Generate the two icons from the logo by padding it onto a transparent square,
+so a wide mark is not squashed into the tab slot:
+
+    python3 - <<'PY'
+    from PIL import Image
+    im = Image.open("logo.png").convert("RGBA")
+    side = max(im.size)
+    sq = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    sq.paste(im, ((side - im.size[0]) // 2, (side - im.size[1]) // 2), im)
+    sq.resize((32, 32), Image.LANCZOS).save("favicon.png")
+    sq.resize((180, 180), Image.LANCZOS).save("apple-touch-icon.png")
+    PY
+
+If the files are absent the page still works. The img carries alt="" so it
+degrades to a gap rather than a broken-image icon, and the tab falls back to the
+browser default.
+
+Nothing on the running site depends on this repository: it is served from
+/var/lib/pool-web/www, which is a copy. Deleting this repo does not affect the
+dashboard.

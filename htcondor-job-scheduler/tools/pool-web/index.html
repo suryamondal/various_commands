@@ -1,6 +1,8 @@
 <!doctype html>
 <meta charset="utf-8">
 <title>SSSD-IOT : Condor Pool Status</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
@@ -17,7 +19,11 @@
   body { background:var(--bg); color:var(--fg); margin:0 auto; max-width:1500px;
          padding:1.6rem 1.6rem 4rem;
          font:17px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  h1 { font-size:1.3rem; margin:0 0 .2rem; }
+  /* Flex so the mark sits on the text baseline block rather than on the
+     baseline itself, which would leave it hanging below the descenders. */
+  h1 { font-size:1.3rem; margin:0 0 .2rem; display:flex; align-items:center;
+       gap:.6rem; }
+  .logo { height:1.9em; width:auto; flex:none; }
   .sub { color:var(--muted); font-size:.88rem; margin-bottom:1.5rem; }
   table { border-collapse:collapse; width:100%; font-size:.92rem; }
   th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--rule);
@@ -50,7 +56,7 @@
   .stamp { color:var(--muted); font-size:.78rem; margin-top:.35rem; max-width:80ch; }
 </style>
 
-<h1>SSSD-IOT : Condor Pool Status</h1>
+<h1><img src="logo.png" alt="" class="logo">SSSD-IOT : Condor Pool Status</h1>
 <div class="sub" id="sub">loading&hellip;</div>
 
 <table>
