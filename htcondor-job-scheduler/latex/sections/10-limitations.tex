@@ -152,6 +152,7 @@ Jetson GPU discovery & \textbf{Unverified} \\
 Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4, but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
 \kn{RANK} as the adoption lever & \textbf{In use}, untested under contention. No second identity has yet competed for that machine \\
 Workers lack the name-resolution guard & The entry node has an \kn{ExecStartPre} that waits for \kn{CONDOR\_HOST} to resolve; workers do not. A worker booting before avahi is ready derives the wrong network and idles until the NetworkManager hook restarts Condor \\
+``DHCP churn on workers needs no action'' & \textbf{Asserted, never exercised.} No worker has been observed changing address under a running startd, so whether it re-advertises on its own is unverified. It is why workers were not given the entry node's address trigger \\
 Off-LAN machines & mDNS is link-local. Deferred by decision \\
 \bottomrule
 \end{tabularx}

@@ -741,6 +741,33 @@ inputs. Wire it as an `ExecStartPre` on `condor.service` plus a NetworkManager
 dispatcher hook that restarts condor **only when the derivation changes**, so a
 lease renewal does not evict running jobs.
 
+### The entry node needs the same hook for a different reason
+
+Workers derive; the entry node **publishes**. It holds two addresses and lets
+peers choose between them, so it has no derivation to watch. When one of its own
+addresses changes, its daemons keep advertising the old one and nothing in the
+pool can reach it.
+
+Observed: its wifi roamed to another subnet, the collector went on advertising an
+address that no longer existed, and nothing recovered until that address happened
+to come back. A worker-style hook would have been silent throughout.
+
+So the hook restarts on **either** trigger: the derivation changed, or this
+machine's own set of addresses changed. A restart rather than a
+`condor_reconfig`, because a daemon bakes its advertised sinful string at
+startup and a reconfig does not revisit it.
+
+**Workers keep only the derivation trigger, deliberately.** A worker whose
+address changes within its own segment needs no action at all: it is reachable
+again at its next collector update. Adding the address trigger there would evict
+running jobs to fix something that fixes itself. The entry node is different
+because every worker dials *it* by name, so one stale address breaks every
+inbound path at once.
+
+Virtual interfaces are excluded from the comparison. Container bridges, VPN
+tunnels and veth pairs appear and disappear for reasons unrelated to the pool,
+and bouncing condor for them would make the hook a liability.
+
 Fail safe: any error - name unresolvable, collector unreachable, ad unparseable
 - must write **nothing**, never a stale name. Stale is the failure this exists
 to prevent. Note the derivation needs root, since querying the collector uses

@@ -1,0 +1,89 @@
+#!/bin/sh
+# NetworkManager dispatcher: restart condor when this machine's addressing
+# changes in a way condor cannot notice by itself.
+#
+# WHY A RESTART AND NOT A RECONFIG
+# A daemon bakes its advertised address, the sinful string, when it starts.
+# condor_reconfig re-reads the config and changes nothing about that. So an
+# address change is only picked up by restarting.
+#
+# TWO TRIGGERS, ONE FILE
+# The same script serves workers and the entry node, which need different
+# things noticed:
+#
+#   workers      derive PRIVATE_NETWORK_NAME from the entry node at startup.
+#                Moving between subnets changes the derivation, and a stale
+#                value is silent: the machine registers, matches, runs jobs to
+#                completion, then cannot return their output.
+#
+#   entry node   derives nothing. It PUBLISHES two addresses and peers pick
+#                between them. When one of its own addresses changes, its
+#                daemons keep advertising the old one and the pool cannot reach
+#                it at all. Observed: its wifi moved subnet, the collector kept
+#                advertising an address that no longer existed, and nothing
+#                recovered until that address happened to come back.
+#
+# So: restart if the derivation changed, OR if this machine's own set of
+# addresses changed. The second covers the entry node, and covers a worker
+# whose address moved without changing which segment it is on.
+#
+# CONSERVATIVE ON PURPOSE
+# Restarting the entry node's condor costs every worker roughly two update
+# intervals while cached security sessions are discovered dead and
+# renegotiated, and running jobs return to idle. So it fires only on a real
+# change, never on a lease renewal that returns the same address.
+#
+# Install: /etc/NetworkManager/dispatcher.d/60-condor-network-change (root, 0755)
+
+IFACE="$1"
+ACTION="$2"
+STATE=/var/lib/condor-network-change.addrs
+
+case "$ACTION" in
+    up|down|dhcp4-change) ;;
+    *) exit 0 ;;
+esac
+
+[ "$IFACE" = "lo" ] && exit 0
+
+systemctl is-active --quiet condor || exit 0
+
+# Addresses this machine holds, ignoring loopback and virtual interfaces.
+# Container bridges, VPN tunnels and veth pairs come and go for reasons that
+# have nothing to do with the pool, and bouncing condor for them would make the
+# hook worse than not having it.
+addr_snapshot() {
+    ip -4 -o addr show scope global 2>/dev/null |
+        awk '$2 !~ /^(lo|docker|veth|br-|virbr|tun|tap|wg|tailscale)/ {print $2" "$4}' |
+        sort |
+        tr '\n' ';'
+}
+
+REASON=""
+
+# 1. Did this machine's own addressing change?
+OLD_ADDRS=$(cat "$STATE" 2>/dev/null)
+NEW_ADDRS=$(addr_snapshot)
+if [ -n "$OLD_ADDRS" ] && [ "$OLD_ADDRS" != "$NEW_ADDRS" ]; then
+    REASON="own addresses changed: ${OLD_ADDRS:-none} -> ${NEW_ADDRS:-none}"
+fi
+printf '%s' "$NEW_ADDRS" > "$STATE" 2>/dev/null
+
+# 2. Did the derived private-network name change? Workers only; the entry node
+#    has no condor-network-select and skips this entirely.
+if [ -x /usr/local/bin/condor-network-select ]; then
+    SEL=/etc/condor/config.d/55-network-select.config
+    CURRENT=$(grep -s '^PRIVATE_NETWORK_NAME' "$SEL")
+    /usr/local/bin/condor-network-select
+    NEW=$(grep -s '^PRIVATE_NETWORK_NAME' "$SEL")
+    if [ "$CURRENT" != "$NEW" ]; then
+        REASON="${REASON:+$REASON; }derivation changed: '${CURRENT:-none}' -> '${NEW:-none}'"
+    fi
+fi
+
+if [ -n "$REASON" ]; then
+    logger -t condor-network-change "$IFACE $ACTION: $REASON; restarting condor"
+    systemctl restart condor
+fi
+
+exit 0
