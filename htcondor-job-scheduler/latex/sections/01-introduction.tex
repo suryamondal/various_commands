@@ -78,9 +78,10 @@ policy written on top of them.
 
 \subsection{What was built}
 
-A four-machine pool spanning two subnets with no route between them: an entry
+A five-machine pool spanning two subnets with no route between them: an entry
 node carrying the collector, negotiator, schedd and a limited startd; a
-sixteen-thread worker; and two four-core desktops in daily use by their owners,
-one of which is also the submit client for its owner's own jobs. Jobs submitted
-from a user's own desktop distribute across all four machines and return their
-output. All measurements in this note come from that pool.
+sixteen-thread worker; two four-core desktops in daily use by their owners, one
+of which is also the submit client for its owner's own jobs; and an NVIDIA
+Jetson Orin Nano contributing six \texttt{aarch64} cores and a GPU. Jobs
+submitted from a user's own desktop distribute across all five machines and
+return their output. All measurements in this note come from that pool.
