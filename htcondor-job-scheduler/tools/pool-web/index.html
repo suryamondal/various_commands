@@ -121,8 +121,13 @@ async function tick() {
     const r = await fetch('live.json?t=' + Date.now(), {cache: 'no-store'});
     const d = await r.json();
     const q = d.queue;
+    // TotalCpus, not Cpus. Cpus is what is FREE right now and falls as jobs
+    // run, which would make the pool look like it were shrinking. TotalCpus is
+    // what each machine offers and is stable - and it already accounts for the
+    // entry node's NUM_CPUS cap, which holds it to 2 of its 4.
+    const cores = d.machines.reduce(function (a, m) { return a + (m.cpus_total || 0); }, 0);
     document.getElementById('sub').textContent =
-      d.pool + '  ·  running ' + q.running + ', idle ' + q.idle +
+      cores + ' CPU cores  ·  running ' + q.running + ', idle ' + q.idle +
       ', held ' + q.held + '  ·  sampled ' + d.generated;
     document.getElementById('rows').innerHTML = d.machines.map(function (m) {
       const used = Math.max(0, m.cpus_total - m.cpus_free);
