@@ -917,6 +917,39 @@ ARM capacity stays invisible until asked for: `condor_submit` pins
 nothing for existing users. Verified by submitting with
 `requirements = (Arch == "AARCH64")` and watching two jobs land on it.
 
+### GPU discovery works; the obstacle was group membership
+
+The earlier note that `condor_gpu_discovery` is "not reliably clean" under L4T
+was untested and wrong about the mechanism. Discovery is fine. Tegra gates the
+GPU behind groups while HTCondor deliberately runs its daemons unprivileged and
+in **no supplementary groups at all**, so the failures come from access rather
+than from detection:
+
+```
+condor in no groups     NvRmMemInitNvmap failed: Permission denied
+condor in video         Error: cuInit returned 801   (CUDA_ERROR_NOT_SUPPORTED)
+condor in video,render  DetectedGPUs="GPU-..."  Capability 8.7
+```
+
+`render` is needed for `/dev/dri/renderD12*`, the DRM render node CUDA uses for
+compute. `debug` and `root` own some `nvhost-*` nodes but are **not** required:
+the account this was compared against has neither and CUDA initialises, so
+granting them would hand GPU profiling access to a daemon that only counts
+devices. A group is picked up at process start, so `condor` must be **restarted**
+after `usermod`, not reconfigured.
+
+Selecting the hardware:
+
+```
+requirements = (Arch == "AARCH64")             any ARM machine
+requirements = (HostBoardClass =?= "jetson")   any Jetson
+requirements = (TotalGpus > 0)                 anything with a GPU
+request_gpus = 1                               and reserve one
+```
+
+`HostBoardClass` matters because `Arch` alone cannot separate a Jetson from a
+Raspberry Pi: both are aarch64 and both may run Ubuntu.
+
 ## 13. Deployment
 
 Config management is the bulk of the work, not scheduling. Every machine needs
@@ -1036,7 +1069,7 @@ policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
 | — | First user PC: worker + submit client, symmetric co-op proven | **done** |
 | 4 | Notebook as a submit client: bindings, `dask-jobqueue`, `ipyparallel` | not started, **nothing pool-side to build** |
 | 5 | ARM workers | **done** (Jetson, aarch64) |
-| 5a | GPU discovery on L4T | not started |
+| 5a | GPU discovery on L4T | **done**, needs `condor` in `video,render` |
 | 6 | Overlay VPN for off-LAN machines | deferred by decision |
 
 Phase 3 was pulled ahead of 1 and 2 because it is the requirement the whole
@@ -1107,6 +1140,7 @@ interactive trust prompt. Check pool membership instead.
 | Remote submit without local Unix accounts | **Still unverified** - the test user has an account on the entry node. Every submitter so far is that same user |
 | `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
-| Jetson GPU discovery | **Unverified.** `/dev/nvhost-gpu` exists; `condor_gpu_discovery` under L4T untested |
+| Jetson GPU discovery | **Works.** `DetectedGPUs`, capability 8.7. Requires `condor` in groups `video` **and** `render`; the failures are `NvRmMemInitNvmap denied` with neither and `cuInit 801` with `video` alone |
+| A GPU job running as `nobody` | **Untested.** The startd can enumerate the device because `condor` was added to `video,render`. Jobs run as `nobody`, which is in no supplementary groups, so a real CUDA payload will hit the same wall one layer down |
 | `MAX_TRANSFER_INPUT_MB` | set to 2048 as a starting guard; unvalidated against real workloads |
 | Off-LAN machines | mDNS is link-local. Deferred by decision |

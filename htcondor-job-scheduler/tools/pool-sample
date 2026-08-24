@@ -28,7 +28,7 @@ import subprocess
 import sys
 import time
 
-ATTRS = ["Name", "Arch", "OpSysAndVer", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
+ATTRS = ["Name", "Arch", "OpSysAndVer", "HostBoardClass", "State", "Activity", "Cpus", "TotalCpus", "Memory", "TotalMemory",
          "TotalLoadAvg", "TotalCondorLoadAvg", "HostCpuPsiAvg10", "HostMemPsiAvg10",
          "HostMemAvailMB", "HostDiskAvailMB", "HostDiskTotalMB", "Start"]
 
@@ -120,7 +120,14 @@ def schedd_hosts(pool):
 
 def poll(pool):
     base = ["-pool", pool] if pool else []
-    raw = run(["condor_status"] + base + ["-af"] + ATTRS)
+    # -af:t gives TAB-delimited output, not whitespace.
+    #
+    # Whitespace splitting silently truncates any multi-word value. HostBoard is
+    # "NVIDIA Jetson Orin Nano" and arrived as "NVIDIA", with the rest shifting
+    # every following field. Tabs make the field count exact regardless of what
+    # is in a value, which also removes the same latent risk on any attribute
+    # holding an expression or a sentence.
+    raw = run(["condor_status"] + base + ["-af:t"] + ATTRS)
 
     schedds = schedd_hosts(pool)
     rows, live = [], []
@@ -133,7 +140,7 @@ def poll(pool):
     # otherwise dropped because they inherit the parent's published Memory.
     suspended = {}
     for line in raw.splitlines():
-        f = line.split()
+        f = line.split("\t")
         if len(f) < len(ATTRS):
             continue
         d = dict(zip(ATTRS, f))
@@ -142,7 +149,7 @@ def poll(pool):
             suspended[host] = suspended.get(host, 0) + 1
 
     for line in raw.splitlines():
-        f = line.split()
+        f = line.split("\t")
         if len(f) < len(ATTRS):
             continue
         d = dict(zip(ATTRS, f))
@@ -170,6 +177,11 @@ def poll(pool):
         # "Ubuntu24".
         rec2["arch"] = d["Arch"].lower().replace("x86_64", "x86_64")
         rec2["os"] = d["OpSysAndVer"]
+        # HostBoardClass, the short form ("jetson"), not HostBoard ("NVIDIA
+        # Jetson Orin Nano") which is too long for a table column. Machines that
+        # do not publish it report undefined, which is honest rather than
+        # missing; the page shows a dash.
+        rec2["board"] = "" if d["HostBoardClass"] in ("undefined", "") else d["HostBoardClass"]
         rec2["suspended"] = suspended.get(short, 0)
         rec2["ledger"] = short in schedds
         live.append(rec2)
@@ -179,10 +191,10 @@ def poll(pool):
     # -global asks every schedd in the pool rather than one named one. There is
     # a single schedd today, so it is equivalent, but it keeps working if a
     # second one ever appears and needs no name plumbing here.
-    qraw = run(["condor_q", "-global", "-all", "-af",
+    qraw = run(["condor_q", "-global", "-all", "-af:t",
                 "Owner", "JobStatus", "RequestCpus", "RequestMemory"])
     for line in qraw.splitlines():
-        f = line.split()
+        f = line.split("\t")
         if len(f) < 4:
             continue
         owner, st = f[0], f[1]
