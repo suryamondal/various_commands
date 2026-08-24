@@ -16,7 +16,8 @@
 --- & Multi-homing across two unroutable subnets & \textbf{done} \\
 --- & First user PC: worker \emph{and} submit client & \textbf{done} \\
 4 & Notebook as a submit client (bindings, \kn{dask-jobqueue}) & not started, nothing pool-side to build \\
-5 & ARM workers; GPU discovery & not started \\
+5 & ARM workers & \textbf{done} (Jetson, aarch64) \\
+5a & GPU discovery on L4T & not started \\
 6 & Overlay VPN for off-LAN machines & deferred by decision \\
 \bottomrule
 \end{tabularx}
@@ -92,6 +93,16 @@ GPUs & \kn{condor\_gpu\_discovery}, \kn{DetectedGPUs}, \kn{request\_gpus}. Jetso
 \caption{Heterogeneity handling.}
 \end{table}
 
+\begin{keypoint}
+Adding the first non-x86 worker changed nothing about the policy. The Jetson
+runs the same owner policy, the same \kn{STARTD\_CRON} job and the same
+measured-memory override, unmodified, and Ubuntu ships the pool's exact Condor
+version for arm64. The two things that did differ were about \emph{size}: the
+standard \kn{RESERVED\_DISK} exceeded that machine's entire free space, which
+would have left it advertising cores while refusing every job, and it needed no
+interface pin because it is dual-homed with no VPN interface.
+\end{keypoint}
+
 The architecture default is the right one: making ARM capacity opt-in means a
 user who has never thought about architecture cannot accidentally match a job to
 a machine that cannot run it.
@@ -148,7 +159,7 @@ The entry node's second interface is now load-bearing & If that interface drops,
 Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Single point of failure; must be always-on. Give it a DHCP reservation \\
 Remote submit with no local Unix account & \textbf{Unverified.} The test user has an account on the entry node, and every submitter so far is that same user \\
 Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
-Jetson GPU discovery & \textbf{Unverified} \\
+Jetson GPU discovery & \textbf{Unverified.} \file{/dev/nvhost-gpu} exists; \kn{condor\_gpu\_discovery} under L4T untested \\
 \kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
 Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4, but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
 \kn{RANK} as the adoption lever & \textbf{In use}, untested under contention. No second identity has yet competed for that machine \\

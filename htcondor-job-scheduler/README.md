@@ -90,7 +90,7 @@ Requirements: `SPOOL` on NVMe; half its cores donated to compute, the rest reser
 | Flagship worker | x86_64 | 16 | 31 G | ~270 G | 1, **in pool** |
 | Laptop | x86_64 | 12 | 8 G | ~250 G | 1+, **submit-only by default** |
 | Edge SBC | aarch64 | 4 | 4 G | ~36 G (SD) | 1+ |
-| Jetson | aarch64 | TBD | TBD | TBD | future, GPU |
+| Jetson | aarch64 | 6 | 7.5 G | ~12 G of 57 G | 1, **in pool** |
 
 Distros: Ubuntu 24.04 LTS on x86_64; Debian 13 on the edge SBC; L4T expected on
 Jetsons. The same login has a different UID on different hosts — irrelevant to
@@ -893,6 +893,30 @@ is entry <-> worker. The entry node is a star hub, not a router.
 
 Three distros and two architectures is where "just ship the binary" stops working.
 
+### Adding the first non-x86 worker changed nothing about the policy
+
+The Jetson runs the same owner policy, the same `STARTD_CRON` job and the same
+measured-memory override as the x86 machines, unmodified. Jobs run as `nobody`
+at nice 10 there exactly as elsewhere. Ubuntu ships condor 23.4.0 for arm64, so
+there is no version skew either.
+
+Two things did differ, and both were about size rather than architecture:
+
+- **`RESERVED_DISK`.** The standard 20480 is larger than that machine's entire
+  free space, 12 G of 57.6 G. Applying it would have left nothing donatable and
+  the machine would have advertised cores while refusing every job. 4096 instead;
+  the fractional floors still stop admission at 5758 MB free.
+- **No `NETWORK_INTERFACE` pin.** It holds an address on both pool segments and
+  carries no VPN interface, so either address Condor picks is reachable. `l4tbr0`
+  and `docker0` are excluded from the dispatcher hook's comparison, since
+  `docker0` at 172.17/16 is RFC1918 and would otherwise be a candidate for the
+  advertised address if it came up.
+
+ARM capacity stays invisible until asked for: `condor_submit` pins
+`Requirements` to the submitting machine's architecture, so the node changed
+nothing for existing users. Verified by submitting with
+`requirements = (Arch == "AARCH64")` and watching two jobs land on it.
+
 ## 13. Deployment
 
 Config management is the bulk of the work, not scheduling. Every machine needs
@@ -1011,7 +1035,8 @@ policy does not reference `ConsoleIdle`/`KeyboardIdle` should not run it at all.
 | 1/2 | Add a second worker; daemon token; jobs distribute | **done** |
 | — | First user PC: worker + submit client, symmetric co-op proven | **done** |
 | 4 | Notebook as a submit client: bindings, `dask-jobqueue`, `ipyparallel` | not started, **nothing pool-side to build** |
-| 5 | ARM workers; GPU discovery | not started |
+| 5 | ARM workers | **done** (Jetson, aarch64) |
+| 5a | GPU discovery on L4T | not started |
 | 6 | Overlay VPN for off-LAN machines | deferred by decision |
 
 Phase 3 was pulled ahead of 1 and 2 because it is the requirement the whole
@@ -1082,6 +1107,6 @@ interactive trust prompt. Check pool membership instead.
 | Remote submit without local Unix accounts | **Still unverified** - the test user has an account on the entry node. Every submitter so far is that same user |
 | `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
-| Jetson GPU discovery | **Unverified** |
+| Jetson GPU discovery | **Unverified.** `/dev/nvhost-gpu` exists; `condor_gpu_discovery` under L4T untested |
 | `MAX_TRANSFER_INPUT_MB` | set to 2048 as a starting guard; unvalidated against real workloads |
 | Off-LAN machines | mDNS is link-local. Deferred by decision |
