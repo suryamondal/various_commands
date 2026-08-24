@@ -7,7 +7,7 @@ are listed once here.
 | class | file | status |
 |---|---|---|
 | **Entry node** | [entry-node.md](entry-node.md) | 1, the single point of failure |
-| x86 desktop / mini-PC | [worker-x86-desktop.md](worker-x86-desktop.md) | in use, 5 machines |
+| x86 desktop / mini-PC | [worker-x86-desktop.md](worker-x86-desktop.md) | in use, 7 machines |
 | Jetson (L4T, aarch64, GPU) | [worker-jetson.md](worker-jetson.md) | in use, 1 machine |
 | Raspberry Pi (aarch64, no GPU) | [worker-raspberry-pi.md](worker-raspberry-pi.md) | **not yet attempted** |
 | Laptop, submit only | [../handover/submit-node.md](../handover/submit-node.md) | macOS and Ubuntu |

@@ -1,7 +1,7 @@
 # Worker: x86 desktop / mini-PC
 
-The fleet's repeated unit. Five in the pool: the entry node (also a limited
-worker), the 16-thread flagship, and three 4-core desktops in daily use.
+The fleet's repeated unit. Seven in the pool: the entry node (also a limited
+worker), the 16-thread flagship, and five 4-core desktops in daily use.
 
 Config: `scripts/50-worker.config` for a donated machine, a per-machine variant
 where sizing or interface differs, or `50-user-pc.config` if the owner also
@@ -16,11 +16,49 @@ submits from it.
 | `RESERVED_DISK` | 20480 | **check free space first**, see the Jetson runbook for why |
 | load thresholds | 0.50 admit / 0.75 suspend | 0.25 is below a 4-core desktop's idle floor |
 
-## The network trap: a VPN interface
+## Rename the machine first, and it is four steps not one
+
+Three machines arrived named after their account rather than the fleet
+convention. Do this **before condor first starts** - `FULL_HOSTNAME` is read at
+daemon start, so a rename afterwards means a stale ad in the collector until the
+startd restarts. Caught in time on all three; nothing had to be undone.
+
+`hostnamectl` alone is not enough. Each of these is separately load-bearing:
+
+```
+sudo hostnamectl set-hostname <new> ; sudo -k
+sudo sed -i.bak "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t<new>/" /etc/hosts ; sudo -k
+printf 'preserve_hostname: true\n' | sudo tee /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg ; sudo -k
+sudo systemctl restart avahi-daemon ; sudo -k
+```
+
+**`/etc/hosts` is not touched by `hostnamectl`.** On all three machines the
+`127.0.1.1` line still named the old host, and Condor resolves the local name.
+
+**cloud-init ships `preserve_hostname: false`** on Ubuntu Server and will revert
+the name from its datasource at the next boot. The change looks like it worked
+until something reboots weeks later. The drop-in settles it without editing the
+packaged `cloud.cfg`.
+
+**avahi does NOT pick up the rename.** Measured on every one of them: it kept
+answering for the old name and timed out on the new one until restarted.
+
+Verify from the **entry node**, not locally - both that the new name resolves and
+that the old one has stopped:
+
+```
+getent hosts <new>.local     # expect the address
+getent hosts <old>.local     # expect nothing
+```
+
+## The network trap: overlay interfaces
 
 Condor advertises the most *public* address it finds, and its private set is
-RFC1918 only. **Tailscale's `100.64/10` is not in that set**, so on a machine
-running tailscale the overlay address is a candidate for the advertised one.
+RFC1918. Two distinct hazards live here, and the second is the common one.
+
+**Outside RFC1918 - takes the primary slot outright.** Tailscale's `100.64/10`
+is not in the private set, so on a machine running tailscale the overlay address
+is a candidate for the advertised one.
 Measured: the entry node cannot reach `100.x` at all, so the worker would
 register, match, run jobs to completion, then fail to return output while
 `condor_status` showed it healthy.
@@ -40,8 +78,31 @@ changes.
 has failed from this, since the entry node advertises and dials IPv4, but check
 `addrs=` and not just the primary. `ENABLE_IPV6 = FALSE` closes it.
 
-A machine with no VPN interface needs no pin, even if dual-homed on both pool
-segments: either address is reachable.
+**Inside RFC1918 - joins the candidate set quietly.** Seen on two machines at
+once: a WireGuard `wg0` on a `10/8` address on both, and on one of them a
+Docker bridge on `172.17/16` with a live veth pair. These do not outrank the
+pool address the way tailscale does, but they are candidates, and the entry node
+can route to none of them. The failure shape is the expensive one - register, match,
+run to completion, then fail to return output while `condor_status` shows the
+machine healthy.
+
+Pin both, then **verify what is actually advertised** rather than trusting the
+pin:
+
+```
+condor_status -af Name MyAddress
+```
+
+`addrs=` must carry only the pool address. Measured on both machines after
+pinning: each carried its own pool address alone, with no overlay prefix
+anywhere in the list.
+
+The NetworkManager hook already excludes `docker`, `veth`, `wg`, `tun`, `tap`
+and `tailscale` from its comparison, so a pin and the hook agree rather than
+fighting.
+
+A machine with no overlay interface needs no pin, even if dual-homed on both
+pool segments: either address is reachable.
 
 ## The other network trap: a host firewall
 
@@ -79,6 +140,11 @@ sudo ufw status verbose ; sudo -k
 sudo ufw allow from <wifi-segment>/23  to any port 9618 proto tcp ; sudo -k
 sudo ufw allow from <wired-segment>/23 to any port 9618 proto tcp ; sudo -k
 ```
+
+**Add these before the first start, not after the diagnosis.** Three of the last
+four machines had `ufw` active. On the first it cost sixteen minutes of a
+machine looking perfect while every claim timed out; on the next two the rules
+went in during the install and both landed jobs on the first negotiation cycle.
 
 One port covers everything: `condor_shared_port` multiplexes every daemon onto
 9618, and `ss -ltn` on a working worker shows exactly one listener.
