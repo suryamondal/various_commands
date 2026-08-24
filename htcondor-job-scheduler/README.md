@@ -950,6 +950,37 @@ request_gpus = 1                               and reserve one
 `HostBoardClass` matters because `Arch` alone cannot separate a Jetson from a
 Raspberry Pi: both are aarch64 and both may run Ubuntu.
 
+**`Arch` must appear in `requirements` or the job will never match.**
+`condor_submit` appends `Arch == "X86_64"` unless the expression already
+mentions `Arch`, so naming only `HostBoardClass` produces a self-contradictory
+requirement, a jetson that is also x86_64. It sits Idle reporting *"5 are
+rejected by your job's requirements"*, which reads like a policy refusal rather
+than a submit-file mistake.
+
+### A GPU job needs the same groups the daemon did
+
+Granting `condor` access lets the startd *enumerate* the device. Jobs run as
+`nobody`, in `nogroup` and nothing else, so a job that successfully reserved a
+GPU still could not open it:
+
+```
+assigned : GPU-938c7276          <- reservation worked
+DENIED   : /dev/nvhost-gpu, /dev/nvmap, /dev/dri/renderD128
+NvRmMemInitNvmap failed: error Permission denied
+```
+
+`usermod -aG video,render nobody` fixes it, and needs no condor restart: the
+starter forks a fresh process per job, so the next job picks up the groups. Only
+long-running daemons need restarting after a group change.
+
+**The consequence, stated plainly: `request_gpus` is advisory on this machine.**
+Access belongs to the account every job shares, so any job landing there can open
+the GPU whether it reserved one or not. That matches how this pool already treats
+`request_memory`, a matchmaking figure rather than an enforced limit, and it is a
+reasonable trade on hardware a few people use. On contended hardware it would not
+be, and the answer there is per-slot job accounts (`SLOT<N>_USER`) with only that
+account in the groups.
+
 ## 13. Deployment
 
 Config management is the bulk of the work, not scheduling. Every machine needs
@@ -1141,6 +1172,7 @@ interactive trust prompt. Check pool membership instead.
 | `RANK` as the adoption lever | **In use** on the first user PC. Untested under contention: no second identity has yet competed for that machine |
 | Job isolation model (bare vs Apptainer) | **Undecided.** Blocks phase 1 if the answer is containers |
 | Jetson GPU discovery | **Works.** `DetectedGPUs`, capability 8.7. Requires `condor` in groups `video` **and** `render`; the failures are `NvRmMemInitNvmap denied` with neither and `cuInit 801` with `video` alone |
-| A GPU job running as `nobody` | **Untested.** The startd can enumerate the device because `condor` was added to `video,render`. Jobs run as `nobody`, which is in no supplementary groups, so a real CUDA payload will hit the same wall one layer down |
+| A GPU job running as `nobody` | **Works**, after `usermod -aG video,render nobody`. Verified end to end: assigned `GPU-...`, all device nodes readable, CUDA initialises |
+| `request_gpus` is advisory on the Jetson | **Accepted.** GPU access belongs to the account all jobs share, so any job there can use the GPU without reserving one. Consistent with `request_memory`; the fix if it ever matters is per-slot job accounts |
 | `MAX_TRANSFER_INPUT_MB` | set to 2048 as a starting guard; unvalidated against real workloads |
 | Off-LAN machines | mDNS is link-local. Deferred by decision |

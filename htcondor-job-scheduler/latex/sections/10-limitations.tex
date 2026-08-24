@@ -160,7 +160,8 @@ Entry node is an actively-used desktop owned by another user & \textbf{Risk.} Si
 Remote submit with no local Unix account & \textbf{Unverified.} The test user has an account on the entry node, and every submitter so far is that same user \\
 Job isolation model (bare versus Apptainer) & \textbf{Undecided.} Blocks growth if the answer is containers \\
 Jetson GPU discovery & \textbf{Works.} Requires \kn{condor} in groups \kn{video} \emph{and} \kn{render}. The failures are \kn{NvRmMemInitNvmap denied} with neither and \kn{cuInit 801} with \kn{video} alone, so neither names permissions after the first \\
-A GPU job running as \kn{nobody} & \textbf{Untested.} The startd enumerates the device because \kn{condor} was added to those groups; jobs run as \kn{nobody}, which is in none, so a real CUDA payload meets the same wall one layer down \\
+A GPU job running as \kn{nobody} & \textbf{Works} after \kn{usermod -aG video,render nobody}, verified end to end. No condor restart needed: the starter forks a fresh process per job \\
+\kn{request\_gpus} is advisory on the Jetson & \textbf{Accepted.} Access belongs to the account every job shares, so a job can use the GPU without reserving one. Consistent with \kn{request\_memory}; per-slot job accounts are the fix if it matters \\
 \kn{MAX\_TRANSFER\_INPUT\_MB} & Set to 2048 as a starting guard; unvalidated against real workloads \\
 Tailscale's IPv6 remains in the user PC's \kn{addrs=} list & \textbf{Open, not currently biting.} The interface pin constrains IPv4 only. Nothing has failed, because the entry node advertises and dials IPv4, but a peer preferring IPv6 would dial an unreachable address. \kn{ENABLE\_IPV6 = FALSE} closes it (\S\ref{sec:vpn}) \\
 \kn{RANK} as the adoption lever & \textbf{In use}, untested under contention. No second identity has yet competed for that machine \\
