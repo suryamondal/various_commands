@@ -43,6 +43,27 @@ packaged `cloud.cfg`.
 **avahi does NOT pick up the rename.** Measured on every one of them: it kept
 answering for the old name and timed out on the new one until restarted.
 
+A worse version of the same thing turned up on the machine that had been in the
+pool longest: avahi **had never published an A record for itself at all**. It was
+`active`, listening on 5353, and resolving every *other* machine's `.local` name
+correctly - so every check short of the right one passed. What failed was the
+reverse direction: nothing could resolve it, including itself.
+
+```
+getent hosts $(hostname).local     # on the machine itself - expect an address
+```
+
+Run that on any machine you add. It went unnoticed for as long as it did because
+every path to that host used a literal IP, and Condor dials the address in the
+sinful string rather than the name - so the pool worked perfectly while the name
+did not exist. A restart of `avahi-daemon` fixed it.
+
+**If condor is already running, restart it too.** These renames were all done
+before first start, where a config reload is enough. On a machine already
+registered, `FULL_HOSTNAME` is read only at daemon start, so the collector keeps
+advertising the old name until the startd restarts. Restarting one worker is
+cheap; restarting the entry node is not.
+
 Verify from the **entry node**, not locally - both that the new name resolves and
 that the old one has stopped:
 
