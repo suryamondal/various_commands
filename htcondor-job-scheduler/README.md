@@ -852,6 +852,66 @@ entry node advertises IPv4 only and dials IPv4 - but a peer preferring IPv6
 from that list would dial an address the entry node cannot reach.
 `ENABLE_IPV6 = FALSE` closes it. **Check `addrs=`, not just the primary.**
 
+### A host firewall breaks the claim, not the registration
+
+The sixth machine had `ufw` active and every earlier one did not, which is what
+made this expensive. The machine looked perfect: registered, every
+`STARTD_CRON` attribute published, `Unclaimed` with `Start = true`, and the
+negotiator matching jobs to it on the first cycle -
+
+```
+Matched 55.0 ... slot1@<worker>
+Successfully matched with slot1@<worker>
+```
+
+- while nothing ever ran, because the **schedd could not connect back** to
+claim what the negotiator had matched:
+
+```
+Failed to send REQUEST_CLAIM to startd slot1@<worker> <...:9618...>
+  SECMAN:2003: TCP connection to startd ... failed
+```
+
+retried once a minute, indefinitely.
+
+Three things make this hard to see, and all three are worth remembering
+independently:
+
+**`condor_status` cannot show it.** The worker's own updates are outbound and
+outbound was never blocked, so the machine keeps reporting itself healthy
+throughout. Every diagnostic that reads the collector agrees.
+
+**`condor_q -analyze` actively misleads.** It reported *"1 are able to run your
+job"*, which is true: analysis answers a question about ClassAd requirements,
+and the requirements did match. Reachability is not part of what it evaluates.
+
+**Testing from the new machine proves nothing.** The worker resolved
+`CONDOR_HOST` and opened 9618 to the entry node without trouble. The broken
+direction is entry-to-worker, and it is the only direction not exercised by
+bringing the machine up. `SchedLog` on the entry node was the only place the
+cause appeared.
+
+The rule belongs on the worker, scoped to the pool's subnets:
+
+```
+ufw allow from <wifi-segment>/23  to any port 9618 proto tcp
+ufw allow from <wired-segment>/23 to any port 9618 proto tcp
+```
+
+One port suffices, because `condor_shared_port` multiplexes every daemon onto
+9618 - `ss -ltn` on a healthy worker shows a single listener.
+
+**Scope to the subnet, not to the entry node's address.** That address is
+expected to move between segments; a host-scoped rule would break the next time
+it roams, which is the very event the NetworkManager hook exists to handle.
+
+**And take the prefix from the machines, not from the DHCP lease.** Both
+segments here are `/23` while the wifi DHCP server hands out a `/24` - the same
+discrepancy `50-widen-wifi-prefix` was written for. A rule one bit too narrow
+works until some machine's lease lands in the upper half of the range, and
+since these are DHCP leases that is a matter of timing, not of design. It would
+present as this identical failure returning with nothing having been changed.
+
 ### Why UID_DOMAIN is deliberately different
 
 `UID_DOMAIN` is a principal namespace, never resolved as a hostname. Keeping it
@@ -1159,6 +1219,7 @@ interactive trust prompt. Check pool membership instead.
 | Both hosts now run the same cron script and the same two-tier policy shape, differing only where the schedd role requires it | **Resolved.** Differences are documented in section 5, not drift |
 | A central-manager restart removes every worker from the pool for ~2 x `UPDATE_INTERVAL` (~10 min) while stale security sessions are discovered and re-negotiated | **Understood, not mitigated.** Self-heals; invisible in `condor_status`. Lower `UPDATE_INTERVAL` if that window matters |
 | A worker starting against an unreachable collector never re-registers | **Mitigated** by `condor-registration-watchdog` on every worker. Armed and proven inert against healthy machines; the failure path awaits a natural occurrence |
+| **The entry node's wifi carries the same address under two prefixes** - a `/23` from `50-widen-wifi-prefix` and the DHCP `/24` alongside it | **Open, not currently biting.** Exactly the dual-prefix state that hook's own comment says it exists to prevent: it adds the `/23` and is meant to delete every other entry, but the DHCP `/24` has returned. Nothing has failed - the entry node advertises its wired address as primary - and investigating means prodding NetworkManager on the one machine whose network must not be disturbed |
 | **Disk-pressure eviction is untested** - it would mean filling the volume that also holds the schedd's queue | **Accepted.** The expression composes correctly with the entry node's absolute floors, but has not been exercised |
 | Suspend, memory eviction, and admission closure under real load | **Verified** (section 6a) |
 | `request_disk` may be advisory rather than enforced, like `request_memory` | **Unverified.** If advisory, one job can fill the disk regardless of what it asked for, and the admission tier is the only protection |

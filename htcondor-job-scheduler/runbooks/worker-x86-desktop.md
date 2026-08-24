@@ -1,9 +1,10 @@
 # Worker: x86 desktop / mini-PC
 
-The fleet's repeated unit. Four in the pool: the entry node (also a limited
-worker), the 16-thread flagship, and two 4-core desktops in daily use.
+The fleet's repeated unit. Five in the pool: the entry node (also a limited
+worker), the 16-thread flagship, and three 4-core desktops in daily use.
 
-Config: `scripts/50-worker.config`, or `50-user-pc.config` if the owner also
+Config: `scripts/50-worker.config` for a donated machine, a per-machine variant
+where sizing or interface differs, or `50-user-pc.config` if the owner also
 submits from it.
 
 ## Sizing
@@ -42,6 +43,60 @@ has failed from this, since the entry node advertises and dials IPv4, but check
 A machine with no VPN interface needs no pin, even if dual-homed on both pool
 segments: either address is reachable.
 
+## The other network trap: a host firewall
+
+Check `ufw` before declaring the machine done. One desktop in the fleet had it
+active and no other did, which is what makes this easy to miss.
+
+The symptom is not a machine that fails to appear. It registers, publishes
+every attribute, reads `Unclaimed` with `Start = true`, and the negotiator
+matches jobs to it happily:
+
+```
+Matched 55.0 ... slot1@<host>
+Successfully matched with slot1@<host>
+```
+
+Then nothing runs, because the **schedd cannot connect back** to claim it:
+
+```
+Failed to send REQUEST_CLAIM to startd slot1@<host> <...:9618...>
+  SECMAN:2003: TCP connection to startd ... failed
+```
+
+It retries once a minute forever. `condor_status` never stops looking healthy,
+and `condor_q -analyze` reports *"1 are able to run your job"* - because the
+analysis is about requirements, and the requirements really do match. Only
+`SchedLog` names the cause.
+
+Worth knowing which direction is at fault: the worker reaches the entry node
+fine, because outbound is allowed and the collector update is worker-initiated.
+It is entry-to-worker that is dropped. Testing reachability from the new
+machine proves nothing.
+
+```
+sudo ufw status verbose ; sudo -k
+sudo ufw allow from <wifi-segment>/23  to any port 9618 proto tcp ; sudo -k
+sudo ufw allow from <wired-segment>/23 to any port 9618 proto tcp ; sudo -k
+```
+
+One port covers everything: `condor_shared_port` multiplexes every daemon onto
+9618, and `ss -ltn` on a working worker shows exactly one listener.
+
+**Take the prefix from the machines, not from the DHCP lease.** Both pool
+segments are `/23`; the wifi DHCP server nonetheless hands out a `/24`, which is
+why `50-widen-wifi-prefix` exists. Write the rule from what `ip -br addr` shows
+on the entry node, not from what the lease says. A rule one bit too narrow works
+until some machine's lease lands in the upper half of the range, at which point
+this whole failure returns with no configuration having changed - and the
+addresses are DHCP, so that is a matter of timing rather than of design.
+
+Concrete prefixes are in `condor-host-list`.
+
+Scope to the subnets rather than to the entry node's address. Its address is
+expected to move between segments - that is what the NetworkManager hook is
+for - so a host-scoped rule breaks the next time it roams.
+
 ## Owner policy
 
 Applies in full and unmodified. These are people's daily drivers, so `SUSPEND`
@@ -65,4 +120,5 @@ condor_status -af Name Start HostMemAvailMB HostCpuPsiAvg10 HostDiskAvailMB
 Attributes present means the `STARTD_CRON` job is feeding the policy. Absent
 means the policy is inert while everything still looks healthy.
 
-Then land a job on it. Appearing in `condor_status` is not the same thing.
+Then land a job on it. Appearing in `condor_status` is not the same thing - the
+firewall case above passes every check on this page except this one.

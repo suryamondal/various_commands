@@ -7,7 +7,7 @@ are listed once here.
 | class | file | status |
 |---|---|---|
 | **Entry node** | [entry-node.md](entry-node.md) | 1, the single point of failure |
-| x86 desktop / mini-PC | [worker-x86-desktop.md](worker-x86-desktop.md) | in use, 4 machines |
+| x86 desktop / mini-PC | [worker-x86-desktop.md](worker-x86-desktop.md) | in use, 5 machines |
 | Jetson (L4T, aarch64, GPU) | [worker-jetson.md](worker-jetson.md) | in use, 1 machine |
 | Raspberry Pi (aarch64, no GPU) | [worker-raspberry-pi.md](worker-raspberry-pi.md) | **not yet attempted** |
 | Laptop, submit only | [../handover/submit-node.md](../handover/submit-node.md) | macOS and Ubuntu |
@@ -100,9 +100,10 @@ condor_status -af Name Start HostMemAvailMB HostCpuPsiAvg10 HostDiskAvailMB | gr
 
 All four attributes must be present. `undefined` means step 3 did not take and
 the policy is inert. Appearing in `condor_status` and **running a job** are
-independent properties — land one before calling the machine done.
+independent properties — land one before calling the machine done. Every
+failure listed below except the token one passes the first half of this step.
 
-## The four things that go wrong every time
+## The five things that go wrong every time
 
 **A user token is not a daemon token.** `condor_token_create -identity
 condor@<pool>.internal`. With a user token the startd starts cleanly, never
@@ -116,6 +117,13 @@ it advertising cores while refusing every job.
 process. That applies to `sudo` for your own account, and to `video`/`render`
 for the `condor` daemon. It does **not** apply to job processes, which the
 starter forks fresh.
+
+**A host firewall drops the claim, not the registration.** `ufw` was active on
+one desktop and on no other. The machine registers, publishes every attribute,
+reads `Unclaimed` / `Start = true`, and the negotiator matches jobs to it — then
+the schedd cannot connect back, and `SchedLog` fills with `REQUEST_CLAIM …
+SECMAN:2003`. Testing reachability from the new machine proves nothing: the
+broken direction is entry-to-worker. See [worker-x86-desktop.md](worker-x86-desktop.md).
 
 **Staged credentials must be shredded.** A daemon token is a bearer credential
 with no machine binding. Do the cleanup as its own step: once, a `shred` at the
