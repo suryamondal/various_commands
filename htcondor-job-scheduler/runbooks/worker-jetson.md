@@ -89,7 +89,7 @@ machine.
 ## Targeting it from a submit file
 
 ```
-requirements = (Arch == "AARCH64") && (HostBoardClass =?= "jetson")
+requirements = (Arch == "AARCH64") && (HostBoardClass =?= "jetson-orin-nano")
 request_gpus = 1
 ```
 

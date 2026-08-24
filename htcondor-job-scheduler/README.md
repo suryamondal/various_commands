@@ -1001,14 +1001,45 @@ after `usermod`, not reconfigured.
 Selecting the hardware:
 
 ```
-requirements = (Arch == "AARCH64")             any ARM machine
-requirements = (HostBoardClass =?= "jetson")   any Jetson
-requirements = (TotalGpus > 0)                 anything with a GPU
-request_gpus = 1                               and reserve one
+requirements = (Arch == "AARCH64")                     any ARM machine
+requirements = (HostBoardClass =?= "jetson-orin-nano")  that board
+requirements = (TotalGpus > 0)                          anything with a GPU
+request_gpus = 1                                        and reserve one
 ```
 
 `HostBoardClass` matters because `Arch` alone cannot separate a Jetson from a
 Raspberry Pi: both are aarch64 and both may run Ubuntu.
+
+**The dashboard deliberately does not show a GPU count.** It was considered and
+dropped. Condor publishes `GPUs = 1` - a count of *devices* - and nothing
+anywhere in the ClassAd carries a core count; the Orin Nano has 1024 CUDA
+cores, so a column headed "GPU cores" would have been wrong by three orders of
+magnitude with no way for the reader to tell. A column headed `gpu` showing `1`
+would be accurate but empty on five machines out of six, and `GPUs_GlobalMemoryMb`
+reports the whole 7486 MB of system RAM anyway, because an integrated GPU shares
+SoC memory - so it would sit beside `memory offered` drawing on the same budget,
+not a second one. The type cell already reads `jetson-orin-nano`.
+
+**The value names a board, not a vendor or a family**, and every machine that
+publishes one follows the same shape:
+
+| machine | `HostBoardClass` | `HostBoard` |
+|---|---|---|
+| the four 4-core mini-PCs | `skull-n100` | `Skull Saints N100` |
+| the 16-thread machine | `skull-ryzen7` | `Skull Saints Ryzen 7` |
+| the Jetson | `jetson-orin-nano` | `NVIDIA Jetson Orin Nano` |
+
+The point is discrimination. Labelling all five x86 machines `skull-saints`
+would have been truthful and useless: the column would read identically for
+every row, and its only job is to tell a 4-core desktop from the pool's one
+high-core machine at a glance.
+
+**The cost is that no expression means "any Jetson" any more.** A second Jetson
+of a different model would need its own value, and a job wanting either would
+have to name both. That is the right trade here - the pool has one of each, and
+a family match can be added later as a separate attribute if a family ever has
+more than one member. Widening a value that is already too narrow is easy;
+narrowing one that jobs already depend on is not.
 
 **`Arch` must appear in `requirements` or the job will never match.**
 `condor_submit` appends `Arch == "X86_64"` unless the expression already

@@ -177,8 +177,8 @@ def poll(pool):
         # "Ubuntu24".
         rec2["arch"] = d["Arch"].lower().replace("x86_64", "x86_64")
         rec2["os"] = d["OpSysAndVer"]
-        # HostBoardClass, the short form ("jetson"), not HostBoard ("NVIDIA
-        # Jetson Orin Nano") which is too long for a table column. Machines that
+        # HostBoardClass, the short form ("jetson-orin-nano"), not HostBoard
+        # ("NVIDIA Jetson Orin Nano") which is too long for a column. Machines that
         # do not publish it report undefined, which is honest rather than
         # missing; the page shows a dash.
         rec2["board"] = "" if d["HostBoardClass"] in ("undefined", "") else d["HostBoardClass"]

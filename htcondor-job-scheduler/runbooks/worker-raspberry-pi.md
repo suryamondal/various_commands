@@ -48,9 +48,14 @@ both are aarch64 and both may run Ubuntu or Debian.
 
 ```
 HostBoard      = "<from /proc/device-tree/model>"
-HostBoardClass = "rpi"
+HostBoardClass = "rpi-<model>"
 STARTD_ATTRS   = $(STARTD_ATTRS) HostBoard HostBoardClass
 ```
+
+`HostBoardClass` names a **board, not a family** - `skull-n100`,
+`skull-ryzen7`, `jetson-orin-nano`. So this is `rpi-5` or `rpi-4b`, not `rpi`:
+a value that cannot tell a Pi 4 from a Pi 5 has the same defect as calling
+every x86 machine `skull-saints`, which is what this convention replaced.
 
 `/proc/device-tree/model` reads `Raspberry Pi ...` here and `NVIDIA Jetson ...`
 on the Jetson, which is the authoritative discriminator.
@@ -64,7 +69,7 @@ no reason.
 ## Targeting it
 
 ```
-requirements = (Arch == "AARCH64") && (HostBoardClass =?= "rpi")
+requirements = (Arch == "AARCH64") && (HostBoardClass =?= "rpi-<model>")
 ```
 
 `Arch` must appear, or `condor_submit` appends `Arch == "X86_64"` and the job
