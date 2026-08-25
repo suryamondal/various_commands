@@ -198,6 +198,59 @@ RANK = (RemoteOwner =?= "<user>@<pool>.internal")
 That is the adoption lever, and the only thing an owner gets for joining that a
 donated-only machine does not.
 
+## Making a worker submit as well
+
+A worker becomes a submit client by gaining a **user token**. That is the whole
+change - there is no schedd, no extra daemon, no submit-specific config,
+because submission is `condor_submit -remote <entry> -spool` and the client
+talks to the entry node's queue directly. Diffing a worker config against a
+user-PC config, the only role-related difference is one `RANK` line.
+
+**A user token is not a daemon token, and it does not live in the same place.**
+
+|  | daemon token | user token |
+|---|---|---|
+| identity | `condor@<pool>.internal` | `<person>@<pool>.internal` |
+| path | `/etc/condor/tokens.d/pool-daemon` | `~/.condor/tokens.d/<name>` |
+| read by | the daemons | that one user's client commands |
+
+Never put a user token in `/etc/condor/tokens.d`. Anything there is read by the
+daemons, which is the opposite of scoping it to a person.
+
+**When an admin installs it for somebody else, `~` is the wrong home.** On a
+shared machine the person who owns it and the person with the ssh session are
+often not the same, so use absolute paths and hand over ownership:
+
+```
+sudo sh -c "install -d -m 700 -o <user> -g <user> \
+      /home/<user>/.condor /home/<user>/.condor/tokens.d
+   install -m 600 -o <user> -g <user> /var/tmp/<file>.token \
+      /home/<user>/.condor/tokens.d/office-pool" ; sudo -k
+sudo shred -u /var/tmp/<file>.token ; sudo -k
+```
+
+`install -d` is safe whether or not `.condor` already exists - and it usually
+cannot be checked first, because a home directory at mode 700 is unreadable to
+anyone else.
+
+**Verify as the target user, not as yourself.** This is the check that proves
+the identity landed on the right person:
+
+```
+sudo su - <user> -c "condor_ping -name <entry> -type SCHEDD WRITE"
+```
+
+Expect `WRITE command using (AES, AES, and IDTOKENS) succeeded as
+<person>@<pool>.internal`. Three things must all be right: **WRITE**, which is
+what submission needs; **IDTOKENS**, proving the token was used rather than some
+fallback; and the identity, which is the accounting identity the pool will bill
+the jobs to.
+
+Then run the same command **as yourself** on that machine. It should fail - it
+hangs working through the other authentication methods and has to be
+interrupted. That negative result is the point: the token is scoped to one
+person, not to the machine.
+
 ## Verify
 
 ```
