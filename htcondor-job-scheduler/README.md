@@ -912,6 +912,44 @@ works until some machine's lease lands in the upper half of the range, and
 since these are DHCP leases that is a matter of timing, not of design. It would
 present as this identical failure returning with nothing having been changed.
 
+### A submitter needs a Unix account on the entry node; a worker does not
+
+The asymmetry is easy to miss, and it hid for a long time behind an accident.
+
+A user token authenticates a person and carries their identity. `UID_DOMAIN`
+matches that identity's domain, so `<person>@<pool>.internal` maps to condor
+owner `<person>` - and the schedd then requires that to be a **resolvable Unix
+account**, because it runs one `condor_shadow` per running job as that user.
+Without the account, submission is refused before the job is created:
+
+```
+ERROR: Setting owner to "<person>", which is not a valid user account
+```
+
+Everything else passes first, which is what makes it confusing: `condor_ping`
+reports WRITE succeeding via IDTOKENS under the right identity, and `condor_q`
+against the entry node works and even reports a total for that person.
+
+**Workers need nothing.** Jobs run there as `nobody`, so no per-person account
+is required on any execute machine. Only the entry node needs one, and it needs
+one **per submitting person**:
+
+```
+adduser --disabled-password --shell /usr/sbin/nologin <person>
+```
+
+`nologin` and no password - it is never logged into. It exists to be a UID.
+
+**Per person, not one shared account.** The shadow runs as that user, and the
+spool directory holding each job's input and output is owned by that UID. One
+shared account would let any submitter read or overwrite another's spooled
+data. The token authenticates; the Unix account is what keeps the files apart.
+
+**Why this took a second person to surface.** The first submitter was the pool
+admin, who already had a login on the entry node for ssh. That account existed
+by accident rather than by design, so remote submission worked from the start
+and the requirement stayed invisible until someone without an ssh login tried.
+
 ### Why UID_DOMAIN is deliberately different
 
 `UID_DOMAIN` is a principal namespace, never resolved as a hostname. Keeping it

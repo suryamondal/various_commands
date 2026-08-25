@@ -233,6 +233,45 @@ sudo shred -u /var/tmp/<file>.token ; sudo -k
 cannot be checked first, because a home directory at mode 700 is unreadable to
 anyone else.
 
+**And the person needs a Unix account ON THE ENTRY NODE.** This is the step
+that is easy to miss, because nothing about it is local to the machine you are
+setting up.
+
+```
+sudo adduser --disabled-password --gecos "HTCondor submitter (<person>)" \
+     --shell /usr/sbin/nologin <person> ; sudo -k
+```
+
+Without it, everything passes except submission itself:
+
+```
+ERROR: Setting owner to "<person>", which is not a valid user account
+```
+
+`UID_DOMAIN` matches the token's domain, so the identity `<person>@<pool>`
+maps to condor owner `<person>`, and the schedd then needs that to be a
+resolvable Unix account - it runs **one condor_shadow per running job as that
+user**. No account, no UID to drop privileges to, and the job is refused before
+it is ever created.
+
+**Note the asymmetry, because it is the whole point.** Workers need no account:
+jobs there run as `nobody`. Only the entry node needs one, and it needs one
+**per submitting person**.
+
+**Per person, not one shared account.** The shadow runs as that user and the
+spool directory holding each job's input and output is owned by that UID. Put
+every submitter on one account and any of them can read or overwrite another's
+spooled data. The token is what authenticates; the Unix account is what keeps
+the files separate.
+
+`nologin` and `--disabled-password` because nobody logs into it. It exists only
+to be a UID.
+
+This went unnoticed for a long time because the first submitter was the pool
+admin, who already had a login on the entry node for ssh. That account was
+accidental, not designed, and it hid the requirement until a second person
+tried to submit.
+
 **Verify as the target user, not as yourself.** This is the check that proves
 the identity landed on the right person:
 
