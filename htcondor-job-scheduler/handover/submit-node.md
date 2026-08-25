@@ -66,12 +66,29 @@ Fill these in before handing the file over.
 
 ### A1. Settle the account question first
 
-**This is the one thing that can block the whole setup**, and it is currently
-unverified in this pool.
+**This is the one thing that can block the whole setup**, and it is now
+confirmed rather than suspected.
 
-Every submitter so far has had a Unix account on the entry node, so we have
-never proven that remote submission works *without* one. The schedd has to map
-an authenticated identity to something it can run a shadow as.
+The pool's second submitter hit it on 2026-08-25. Everything upstream passed -
+`condor_ping` reported WRITE succeeding via IDTOKENS under the right identity,
+and `condor_q` against the entry node worked and even reported a total for that
+person - and then submission failed:
+
+```
+ERROR: Setting owner to "<USER>", which is not a valid user account
+submit failed
+```
+
+`UID_DOMAIN` matches the token's domain, so `<USER>@<POOL>` maps to condor
+owner `<USER>`, and the schedd requires that to be a resolvable Unix account
+because it runs **one condor_shadow per running job as that user**. No account,
+no UID to drop privileges to, and the job is refused before it is created.
+
+It stayed hidden this long because every earlier submitter was the pool admin,
+who already had a login on the entry node for ssh - an accident, not a design.
+
+Note the asymmetry: **workers need no per-person account**, because jobs there
+run as `nobody`. Only the entry node does.
 
 Check before promising anything:
 
@@ -88,7 +105,14 @@ ssh <ENTRY_NODE> "id <USER> 2>&1"
   ```
 
   A distinct UID per person, never a shared one — fair-share and spool
-  isolation both depend on it.
+  isolation both depend on it. The shadow runs as that user and the spool
+  directory holding each job's input and output is owned by that UID, so one
+  shared account would let any submitter read or overwrite another's data.
+
+  The first real instance was created with `adduser --disabled-password
+  --shell /usr/sbin/nologin` instead, which gives a regular UID and a home
+  directory. Both work — the shadow needs neither a home nor a system UID — but
+  the `useradd` form above is the tidier one and is what to use next time.
 
 ### A2. Issue a *user* token
 
@@ -736,7 +760,7 @@ Stated plainly, because two of these are unverified rather than solved.
 
 | Risk | Status |
 |---|---|
-| Remote submit **without** a Unix account on the entry node | **Unverified.** Every submitter so far had one. A1 works around it by creating one |
+| Remote submit **without** a Unix account on the entry node | **Confirmed impossible**, 2026-08-25. `condor_submit` fails with *"Setting owner to X, which is not a valid user account"* while authentication, authorisation and `condor_q` all still succeed. The schedd runs one shadow per job as that user, so the account is required. A1 is not a workaround but the fix |
 | Apple Silicon native build | **Unverified.** Published macOS tarballs have been x86_64; Rosetta 2 covers it, at some startup cost |
 | Client/pool version skew | Pool is 23.4.0. Pin the client to 23.x if the download script allows it |
 | Token revocation | There is no per-token revocation short of rotating the pool signing key, which invalidates **every** token. Treat the file accordingly |
