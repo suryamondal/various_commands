@@ -142,8 +142,22 @@ def render(db, out, minutes, name, title, fmt="svg"):
         # and a 16-core machine are read the same way. Autoscaling makes a
         # machine at load 1.0 look as busy as one at load 15.
         ax.set_ylim(0, max(cores * 1.15, max((r[1] for r in rows), default=1) * 1.15, 1))
-        ax.set_ylabel(m[:18], fontsize=8)
+        # The y-label names the axis, not the machine. It used to carry the
+        # machine name, which matplotlib draws ROTATED 90 degrees and which
+        # [:18] had to truncate - so long names were both sideways and clipped.
+        ax.set_ylabel("load", fontsize=8)
         ax.legend(loc="upper left", fontsize=7, frameon=False, ncol=2)
+        # Name goes horizontally, centred across the panel, in an unfilled
+        # box. Centring is what keeps this simple: an offset from the legend
+        # would have to be measured after a draw pass, because "owner load"
+        # renders at a different width per font and figure size.
+        # facecolor "none", not the background colour - an unfilled box lets
+        # the grid show through instead of punching a white hole in it.
+        short = m[:-6] if m.endswith(".local") else m
+        ax.text(0.5, 0.96, short, transform=ax.transAxes,
+                ha="center", va="top", fontsize=8, color=FG,
+                bbox=dict(facecolor="none", edgecolor=GRID, linewidth=0.7,
+                          boxstyle="round,pad=0.35"))
 
         r2 = ax.twinx()
         mem_total_gb = (rows[-1][7] or 0) / 1024.0
