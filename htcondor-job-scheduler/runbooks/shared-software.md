@@ -154,6 +154,55 @@ here `yosys` was present-but-wrong on four machines while `nextpnr-ecp5` and
 `ecppack` were missing entirely on three, so one machine had a synthesiser and
 no place-and-route.
 
+## Pruning the superseded copies
+
+Once PATH is uniform, remove the old copies - not for disk, but so the question
+"which version ran?" has exactly one answer. The saving here was ~450 MB across
+seven machines, invisible against 29 GB free; the ambiguity was the cost.
+
+**Audit before removing, and read the simulation.**
+
+```
+dpkg-query -W -f='${Package} ${Version} ${Installed-Size}kB\n' <names>
+apt-get -s remove <names>          # simulation, needs no root
+apt-cache rdepends --installed <names>
+ls -l /usr/local/bin/<tool>*       # hand-built copies live here, not in dpkg
+```
+
+**Name every package, not the obvious ones.** Removing `yosys nextpnr-ecp5
+fpga-trellis` looks complete and leaves `nextpnr-ecp5-chipdb` behind - 102 MB,
+three quarters of the total, because a chip database is a separate package that
+nothing then depends on. The simulation shows this: it reported three removals
+against six installed packages.
+
+**Prove leftovers are inert before deleting them.** One machine had a hand-built
+yosys 0.56 whose companions - `yosys-abc`, `yosys-config` and friends - were
+still first on PATH while `yosys` itself had been repointed at 0.66. Whether
+that mattered depended on how yosys locates its helpers, which is a question to
+answer by measurement, not by reading:
+
+```
+run the same synthesis on a machine that HAS the leftovers and one that does not
+```
+
+Identical output (`717285` bytes both) showed yosys resolves its companions
+relative to its own real path, not via PATH, so the leftovers were never
+invoked. That is what made deleting them safe rather than hopeful.
+
+**Do not prune a tool for a different target.** The same machine carried
+`nextpnr-ice40`, 300 MB - larger than everything else combined, and the obvious
+thing to sweep up. It targets a different FPGA family, and the `/opt` install
+ships `nextpnr-ecp5` only, so removing it would have deleted capability nothing
+replaces. Check what a binary is *for* before treating it as a duplicate.
+
+**Remove regular files only, never the symlinks.** The prune and the PATH fix
+write to the same directory; a script that deletes by name will happily remove
+the symlink it is supposed to preserve.
+
+**Then run the real pipeline again.** Output byte counts should be unchanged
+from before the prune. If they moved, something the toolchain depended on went
+with the packages.
+
 ## Verify three things, then verify with a real job
 
 On each machine:
