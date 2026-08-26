@@ -27,6 +27,41 @@ So a build cannot be made in one place and copied to another - it would fail to
 load its own libraries. **The prefix is a build-time decision and is permanent
 for that build**, which is why each machine builds rather than receiving a copy.
 
+## Build on every machine, or build once and copy? Check RUNPATH
+
+This is the decision that shapes all the work, and it is answerable in one
+command rather than by preference. Two installs done back to back landed on
+opposite answers:
+
+```
+readelf -d <binary> | grep -E "RUNPATH|RPATH"
+grep -rl "/home/" <install-tree>
+```
+
+| | openEMS | the ECP5 FPGA toolchain |
+|---|---|---|
+| `RUNPATH` | `/home/<user>/products/openEMS/lib` - **absolute, into a home** | `$ORIGIN/../lib/trellis` on `ecppack`, none on the others |
+| refs to `/home` | in the binary itself | one shell script only |
+| external data | none | none - `nextpnr-ecp5` is 186 MB because the chip database is **embedded** |
+| therefore | **must be built per machine** | **build once, copy** |
+| cost | ~20 min x 7 machines | 82 MB tarball, ~1 min x 7 |
+
+`$ORIGIN` is the point. A relative RUNPATH means the binary finds its libraries
+wherever the tree is placed; an absolute one into a home directory means the
+binary is welded to a path that does not exist on any other machine, and copying
+it produces `cannot open shared object file` at run time rather than an error at
+install time.
+
+**So check before choosing.** Assuming "build everywhere" wastes hours;
+assuming "copy" ships something that fails only when a job runs.
+
+**When copying, still grep the tree for hardcoded paths.** In the FPGA trees
+exactly one file had them - `yosys-config`, which reports `--cxxflags`,
+`--bindir` and `--datdir` for building yosys plugins. Left alone it would point
+every plugin build at a path that does not exist on the target. A `sed` at
+install time fixes it; not noticing it leaves a trap for whoever first compiles
+a plugin.
+
 ## Pin the version
 
 Every machine must run the same build. A solver that differs between machines
@@ -86,12 +121,25 @@ readelf -d .../bin/<binary> | grep RUNPATH # points at /opt, not a home
 while the software is still unusable to the pool - that is precisely the failure
 `/opt` exists to prevent, and it is not exercised until a real job does it.
 
+**Make that job do real work, not a version check.** The FPGA install was
+verified by running an actual flow - Verilog through `yosys synth_ecp5`, then
+`nextpnr-ecp5` place-and-route, then `ecppack` - on four machines at once. The
+outputs came back **byte-identical**:
+
+```
+synth 717497 B    pnr 17821 B    bitstream 582369 B
+```
+
+Identical byte counts are far stronger evidence of a consistent toolchain than
+matching version strings: two builds can report the same version and still
+differ. Sizes to the byte cannot.
+
 A cheap job that reports `id -un`, runs the binary, and counts
 `ldd ... | grep -c "not found"` is enough.
 
 ## Two traps met while doing this
 
-**Do not probe with a flag you have not checked.** `openEMS --version` prints
+**Do not probe with a flag you have not checked.** Twice now. `openEMS --version` prints
 the banner and then aborts with `unrecognised option`, exit 134, because there
 is no such flag. Every job reported `Aborted (core dumped)` on stderr while the
 output looked perfect. The install was fine; the probe was wrong.
