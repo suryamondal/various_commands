@@ -658,6 +658,42 @@ Machines here are people's desktops and reclaim themselves without warning:
 - Jobs are pinned to the submitting machine's architecture by default, so an
   x86_64 client will not accidentally match ARM workers.
 
+### Software already on every worker
+
+Installed under `/opt/products` on all seven x86\_64 machines, identical
+version on each. **Call these by absolute path.** They are deliberately not
+assumed to be on `PATH` inside a job, and a job that means a particular version
+should say which.
+
+```
+openEMS       /opt/products/openEMS/bin/openEMS
+              /opt/products/openEMS/venv/bin/python     (import openEMS, CSXCAD)
+
+yosys         /opt/products/yosys/v0.66/install/bin/yosys
+nextpnr-ecp5  /opt/products/nextpnr/v0.10/install/bin/nextpnr-ecp5
+ecppack       /opt/products/prjtrellis/1.4-79-g56bb170/install/bin/ecppack
+```
+
+A worked ECP5 flow, verified running on the pool as `nobody`:
+
+```
+yosys -q -p "synth_ecp5 -json out.json" design.v
+nextpnr-ecp5 --25k --package CABGA256 --json out.json --textcfg out.config
+ecppack out.config out.bit
+```
+
+**Why `/opt` and not a home directory.** Jobs run as `nobody`, and a home
+directory at mode 750 cannot even be traversed by that account - software
+installed under `~` is invisible to every job on every machine. All of
+`/opt/products` is world-readable; your own home directory on a worker is not.
+
+**The versions are pinned and identical pool-wide**, so the same job produces
+the same result wherever it lands. That is not automatic: before this was
+tidied, a bare `yosys` resolved to four different versions across seven
+machines, and jobs synthesised differently depending on placement. If you need
+a version that is not installed, ask rather than installing your own on one
+machine.
+
 ---
 
 ## 5. Off the office LAN
