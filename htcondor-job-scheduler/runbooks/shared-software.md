@@ -107,6 +107,53 @@ chmod -R a+rX /opt/products
 Uniform ownership on every machine, and `a+rX` so `nobody` can traverse and
 execute. Skip this and the install exists but every job fails.
 
+## Installing it is not enough: check what PATH actually resolves to
+
+The installs can be perfect and identical and the pool still be inconsistent,
+because a job that invokes a tool **by name** gets whatever PATH finds first.
+
+Surveyed across seven machines after a correct, identical install of the ECP5
+toolchain into `/opt/products`, a bare `yosys` gave **four different answers**:
+
+```
+three machines   /usr/bin/yosys         0.33          (from apt)
+one machine      /usr/local/bin/yosys   0.56+165      (hand-built by someone)
+two machines     none                   -             (would simply fail)
+one machine      ~/.local/bin/yosys     0.66          (the pinned build)
+```
+
+So the same submit file synthesised differently depending where the negotiator
+placed it, and failed outright on two machines. Nothing reports this. The
+output is simply not what you think it is.
+
+**This is not hypothetical.** The identical confusion on a single workstation -
+PATH quietly resolving to an older toolchain while the newer one sat installed -
+cost two weeks of debugging elsewhere before it was noticed, and it was noticed
+only because deploying to the pool forced a comparison of what was on PATH
+against what was in the install tree.
+
+**The fix, on every machine:**
+
+```
+sudo ln -sfn /opt/products/yosys/v0.66/install/bin/yosys /usr/local/bin/yosys
+```
+
+`/usr/local/bin` precedes `/usr/bin`, so this wins over a distro package without
+removing it - the packaged version stays installed and reachable by absolute
+path for anything that depends on it.
+
+**Preserve anything real that is already there.** If `/usr/local/bin/<tool>` is
+a regular file rather than a symlink, someone installed it deliberately. Move it
+to `<tool>.preexisting` and say so, rather than overwriting it - destroying
+somebody's build silently is the same class of surprise this change exists to
+remove.
+
+**Then survey again rather than assuming.** `command -v <tool>` plus the version
+string, on every machine, is the check. Doing it for one tool is not enough:
+here `yosys` was present-but-wrong on four machines while `nextpnr-ecp5` and
+`ecppack` were missing entirely on three, so one machine had a synthesiser and
+no place-and-route.
+
 ## Verify three things, then verify with a real job
 
 On each machine:
