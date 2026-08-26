@@ -950,6 +950,60 @@ admin, who already had a login on the entry node for ssh. That account existed
 by accident rather than by design, so remote submission worked from the start
 and the requirement stayed invisible until someone without an ssh login tried.
 
+### The entry node ran jobs as their submitter, and no other machine did
+
+Found by asking a job who it was, on four machines at once:
+
+```
+the entry node         running as <submitter> (1000)
+worker A               running as nobody      (65534)
+worker B               running as nobody      (65534)
+worker C               running as nobody      (65534)
+```
+
+The obvious explanation - that the account exists there and not elsewhere - is
+wrong. That account exists on every machine. It exists with a **different uid
+on each** (1000, 1001, 1002), which is itself the reason the fallback is
+correct:
+mapping an owner by name across the pool would give a job one uid here and
+another there, and file ownership would stop meaning anything.
+
+**The mechanism.** `TRUST_UID_DOMAIN` is unset, so false. With it false,
+HTCondor honours a submit machine's claimed `UID_DOMAIN` only when that
+machine's hostname lies inside the domain. Hosts here are `*.local` while
+`UID_DOMAIN` is `<pool>.internal` - deliberately a principal namespace, never
+resolved as a hostname (previous section). So the claim never verifies
+across machines and workers fall back to `nobody`. The entry node is the one
+host where the schedd and the startd are the same machine: there is no
+cross-machine trust to establish, so the fallback never happens.
+
+**A downstream consequence of a deliberate decision, which nobody traced.**
+Making `UID_DOMAIN` a namespace rather than a resolvable domain is what
+produces the `nobody` fallback that six places in these documents describe as
+though it were configured directly. It is not configured anywhere. It is a
+side effect.
+
+**What it cost.** A job landing on the entry node could read and write the
+submitting user's home directory - on the single machine holding the queue, the spool
+and the pool signing key. Worse, it grew silently: creating a Unix account so
+somebody can *submit* (previous section) also changes how their jobs *execute*
+there, so every person added to the pool widened it with no announcement.
+
+**The fix**, on the entry node:
+
+```
+STARTER_ALLOW_RUNAS_OWNER = FALSE
+```
+
+Read per job by the starter, so `condor_reconfig` is enough - no restart, and
+no pool disruption. Verified by re-running the same probe: all four machines
+then reported `nobody (65534)`.
+
+**Worth keeping in mind for any future submit node.** The rule is not "workers
+run as nobody". The rule is "a machine runs jobs as their owner when it can
+trust the submitter's UID_DOMAIN, which here only happens when it is also the
+submit machine". Any second schedd would reintroduce this.
+
 ### Why UID_DOMAIN is deliberately different
 
 `UID_DOMAIN` is a principal namespace, never resolved as a hostname. Keeping it

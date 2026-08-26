@@ -10,6 +10,7 @@ are listed once here.
 | x86 desktop / mini-PC | [worker-x86-desktop.md](worker-x86-desktop.md) | in use, 7 machines |
 | Jetson (L4T, aarch64, GPU) | [worker-jetson.md](worker-jetson.md) | in use, 1 machine |
 | Raspberry Pi (aarch64, no GPU) | [worker-raspberry-pi.md](worker-raspberry-pi.md) | **not yet attempted** |
+| Shared software on every machine | [shared-software.md](shared-software.md) | worked example: openEMS |
 | Laptop, submit only | [../handover/submit-node.md](../handover/submit-node.md) | macOS and Ubuntu |
 
 Concrete hostnames, addresses and the pool domain live in `condor-host-list`,
