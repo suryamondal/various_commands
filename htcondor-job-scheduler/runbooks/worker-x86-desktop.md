@@ -156,6 +156,19 @@ fine, because outbound is allowed and the collector update is worker-initiated.
 It is entry-to-worker that is dropped. Testing reachability from the new
 machine proves nothing.
 
+**Ask `ufw`, not systemd.** `systemctl is-active ufw` reports the *unit*, and
+returns `active` on a machine where the firewall is switched off - measured on
+a worker that turned out to be filtering nothing at all. Only `ufw status` says
+whether rules are in force:
+
+```
+systemctl is-active ufw   ->  active          (the unit is loaded)
+ufw status                ->  Status: inactive (nothing is being filtered)
+```
+
+Getting this backwards is costly in both directions: a machine that looks
+firewalled but is not, or one that looks open and silently drops every claim.
+
 ```
 sudo ufw status verbose ; sudo -k
 sudo ufw allow from <wifi-segment>/23  to any port 9618 proto tcp ; sudo -k
