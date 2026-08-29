@@ -201,10 +201,31 @@ condor_status -constraint 'regexp("<host>", Name)' -af:lrn \
   HostMemAvailMB OwnerSessionActive HostDiskAvailMB
 ```
 
-**`Memory` and `HostMemAvailMB` must be non-zero, and must CHANGE between two
-queries a minute apart.** A frozen value means the cron is dead — see the traps
-below. This is the check that matters; everything else can look perfect while
-the machine is incapable of running a job.
+**`Memory` and `HostMemAvailMB` must be non-zero.** Zero means the machine is in
+the pool and cannot run anything — see trap 1.
+
+**Do not test cron liveness by watching that value change.** It legitimately
+does not: `memory_pressure` reports whole percent, so an idle Mac reports the
+same figure indefinitely (16384 MB x 87% = 14254, every cycle). Both of this
+pool's Macs have shown a constant value while perfectly healthy. Test it two
+ways instead:
+
+```
+condor_status -constraint 'regexp("<host>", Name)' -af MyCurrentTime HostMemAvailMB
+```
+
+`MyCurrentTime` must advance between queries — that proves the ad is being
+refreshed. Then compare the advertised number against what the script produces
+live on the machine:
+
+```
+ssh <host> 'sh /usr/local/bin/condor-owner-session'
+```
+
+If the two agree and `MyCurrentTime` is moving, the cron is fine. A genuinely
+dead cron shows the advertised value STUCK while the live script returns
+something different — which is exactly what the runaway-benchmark failure in
+trap 2 looked like.
 
 Then run something real:
 
