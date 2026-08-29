@@ -241,6 +241,12 @@ requirements = (OpSys == "macOS")
 
 ## Traps
 
+Numbered as they were found, not by severity. **8 is the most dangerous** - it
+produces a machine that registers, matches and runs jobs, then loses their
+output. **6 and 1** cost the most time to diagnose, because both leave something
+looking healthy while it is not.
+
+
 **1. `vm_stat` is the wrong way to measure free memory, and being wrong here
 takes the machine out of the pool silently.** The obvious port of Linux
 `MemAvailable` is `free + inactive + speculative + purgeable`. On this machine
@@ -280,10 +286,28 @@ and it is x86_64, so the daemons report the binary's architecture. Harmless —
 jobs exec native arm64 — but it means `Arch == "X86_64"` is the correct thing
 to match on, and `HostBoardClass` is what to use when you mean the hardware.
 
-**5. Leave the hostname alone unless you have a reason.** mDNS advertises
-`LocalHostName`, which is what the collector resolves; `scutil --get
-LocalHostName` is the value that matters. Changing `ComputerName` is visible to
-the machine's user in Finder and AirDrop for no functional gain.
+**5. Three names, and only two of them are yours to change.** macOS keeps
+`HostName`, `LocalHostName` and `ComputerName` separately:
+
+```
+scutil --set HostName      <name>    what `hostname` returns
+scutil --set LocalHostName <name>    what mDNS advertises  <- the one Condor resolves
+scutil --set ComputerName  <name>    Finder, AirDrop, the machine's owner sees it
+```
+
+Set the first two to the pool name. **Leave `ComputerName` alone** - it is the
+name the person using the machine sees, it has no functional role, and
+overwriting it is a visible change to someone else's desktop for no gain. It
+often holds an apostrophe (`Pratham's Mac mini`), and it is a typographic
+U+2019, not an ASCII quote - restoring it after an accidental overwrite means
+reproducing that character exactly.
+
+Whether to rename at all is the operator's call, not a default. This pool's two
+Macs differ deliberately: one kept the name it arrived with, the other was
+renamed to the `<person>-work-pc-<board>` convention. Neither is wrong - and
+note the ssh alias does **not** have to match the hostname. On one of these
+machines it does not, so do not infer a hostname from `~/.ssh/config` and set
+it without asking.
 
 **6. yosys exits 139 under Condor while producing perfect output.** The most
 misleading failure found on these machines, and it cannot be reproduced by
@@ -331,3 +355,55 @@ would inherit the same crash.
 **7. sudo is cached in a shared pane.** A sent `sudo` command runs immediately
 if the timestamp is still live, with no prompt to validate at. Prefix with
 `sudo -k` as well as suffixing it.
+
+**8. Interface names are per-MACHINE, not per-model, and copying the config is
+silently destructive.** The pool's two Mac minis are the same board, same core
+count, same memory - and their interfaces are reversed:
+
+| | wired (172.16) | wifi (192.168) |
+|---|---|---|
+| first Mac | `en0` | `en1` |
+| second Mac | `en1` | `en0` |
+
+Copying `NETWORK_INTERFACE = en0` from one to the other does not fail at
+startup. The startd binds and advertises the *wifi* address, the machine
+registers, matches jobs and runs them to completion, and then fails to return
+their output - so it reads as a flaky worker rather than a wrong config line.
+This is the pool's most expensive failure shape and the reason `MyAddress` is
+checked after every worker install, never assumed:
+
+```
+ifconfig en0 | awk '/inet /{print $2}'
+ifconfig en1 | awk '/inet /{print $2}'
+condor_status -constraint 'regexp("<host>", Name)' -af MyAddress
+```
+
+`MyAddress` must carry the wired address. Verify on the machine, not from
+memory, and not from its sibling.
+
+**9. The disk floor is a fraction of the whole volume, which is wrong on a Mac
+that is mostly full of somebody's data.** `DISK_SOFT_FLOOR` is 10% of
+`HostDiskTotalMB`. On a 233 GB volume that reserves 23 GB - on machines that
+have never had more than ~30 GB free, because the rest is the owner's files.
+Condor therefore gets a few GB of usable headroom, and anything that consumes
+disk pushes the machine below the floor, where `START` goes false and it stops
+matching *silently*.
+
+This is not hypothetical: building the toolchains on the second Mac took it
+from 24.8 GB to 21.5 GB free, under the 23.4 GB floor, and it left the pool
+while looking perfectly healthy in `condor_status`.
+
+Immediate remedy is to reclaim build byproducts, which are pure waste:
+
+```
+rm -rf /opt/products/*/*/source/build
+rm -rf /opt/products/prjtrellis/*/source/libtrellis/build
+brew cleanup --prune=all
+```
+
+That recovered 3.3 GB with every install intact. But it only buys ~1.5 GB of
+margin and the next build spends it again. **The real fix is a floor that does
+not scale with a volume Condor cannot use.** The memory floors already solve
+exactly this asymmetry with `max(absolute, fraction)`; the disk floors never
+got the same treatment. Unresolved - decide it once for both machines rather
+than pruning each time.

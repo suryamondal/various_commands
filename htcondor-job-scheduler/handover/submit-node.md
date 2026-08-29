@@ -659,7 +659,7 @@ Machines here are people's desktops and reclaim themselves without warning:
   x86_64 client will not accidentally match ARM workers.
 - They are pinned to **Linux** by default too. `condor_submit` adds
   `(OpSys == "LINUX")` unless your requirements already mention `OpSys`, so the
-  pool's Mac mini is invisible to an ordinary job. Reaching it is opt-in:
+  pool's two Mac minis are invisible to an ordinary job. Reaching them is opt-in:
   `requirements = (OpSys == "macOS")`. Note `macOS`, not `OSX`. Check what your
   job will actually ask for with `condor_submit -dry-run /dev/stdout <file>.sub`
   before queueing — this is the one requirement people get wrong, and the
@@ -668,7 +668,7 @@ Machines here are people's desktops and reclaim themselves without warning:
 ### Software already on every worker
 
 Installed under `/opt/products` on all seven x86\_64 machines, identical
-version on each, and on the Mac mini at the same paths but **not** the same
+version on each, and on both Mac minis at the same paths but **not** the same
 versions — see the warning at the end of this section. **Call these by
 absolute path.** They are deliberately not
 assumed to be on `PATH` inside a job, and a job that means a particular version
@@ -703,11 +703,11 @@ machines, and jobs synthesised differently depending on placement. If you need
 a version that is not installed, ask rather than installing your own on one
 machine.
 
-**The Mac mini is currently an exception, deliberately and temporarily.** It
-was built against the newest release tags so the Linux hosts could be brought
+**The Mac minis are currently an exception, deliberately and temporarily.** They
+were built against the newest release tags so the Linux hosts could be brought
 up to them afterwards, so right now the pool is not uniform:
 
-| | Linux workers | Mac mini |
+| | Linux workers | both Mac minis |
 |---|---|---|
 | yosys | `v0.66` | `v0.68` |
 | nextpnr-ecp5 | `v0.10` | `v0.11` |
@@ -717,7 +717,9 @@ up to them afterwards, so right now the pool is not uniform:
 For openEMS this does not matter — same commit, and the numerical result was
 identical. For the FPGA flow it does: yosys 0.68 and 0.66 do not emit
 byte-identical netlists, so a synthesis job would produce different output
-depending on where it landed.
+depending on where it landed. The two Macs agree with each other - verified
+byte-identical, same sha256, on an ECP5 flow run through Condor on both - so
+placement between them is safe; it is Mac-versus-Linux that differs.
 
 **In practice the default protects you.** An ordinary job carries
 `OpSys == "LINUX"` and cannot reach the Mac at all, so this can only bite

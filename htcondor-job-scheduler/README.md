@@ -1097,10 +1097,10 @@ requirements = (Arch == "AARCH64")                     any ARM machine
 requirements = (HostBoardClass =?= "jetson-orin-nano")  that board
 requirements = (TotalGpus > 0)                          anything with a GPU
 request_gpus = 1                                        and reserve one
-requirements = (OpSys == "macOS")                       the Mac mini
+requirements = (OpSys == "macOS")                       either Mac mini
 ```
 
-**Naming `OpSys` is mandatory to reach the Mac mini, and forgetting it fails
+**Naming `OpSys` is mandatory to reach either Mac mini, and forgetting it fails
 silently.** `condor_submit` appends `(Arch == "X86_64") && (OpSys == "LINUX")`
 to every job whose requirements do not already mention those attributes. A job
 that asks for `HostBoardClass =?= "mac-mini-m4"` and nothing else therefore
@@ -1137,9 +1137,9 @@ publishes one follows the same shape:
 | the four 4-core mini-PCs | `skull-n100` | `Skull Saints N100` |
 | the 16-thread machine | `skull-ryzen7` | `Skull Saints Ryzen 7` |
 | the Jetson | `jetson-orin-nano` | `NVIDIA Jetson Orin Nano` |
-| the Mac mini | `mac-mini-m4` | `Apple Mac mini M4` |
+| the two Mac minis | `mac-mini-m4` | `Apple Mac mini M4` |
 
-**The Mac mini's `Arch` column reads `X86_64`, and the machine is arm64.** This
+**The Mac minis' `Arch` column reads `X86_64`, and the machines are arm64.** This
 is the only value in the pool that is actively misleading, so it is worth
 knowing why before someone files a bug against it. HTCondor publishes exactly
 one macOS build - `x86_64_macOS13` - so the daemons run under Rosetta and
@@ -1148,11 +1148,11 @@ report the architecture of the *binary*, which is all they can see.
 It is harmless, and that was verified rather than assumed: an x86_64 Rosetta
 process execs an arm64 binary **natively**, so the openEMS and yosys builds
 under `/opt/products` run at full arm64 speed. Only the control-plane daemons
-are translated, and they are idle by comparison. A Condor job on that machine
+are translated, and they are idle by comparison. A Condor job on those machines
 was confirmed to launch the native arm64 openEMS and hit 136 MCells/s per core.
 
 The practical consequence is that `Arch == "X86_64"` is the *correct* thing to
-match on for that host, however wrong it looks, and `HostBoardClass` is the
+match on for those hosts, however wrong it looks, and `HostBoardClass` is the
 attribute to use when you actually mean the hardware.
 
 The point is discrimination. Labelling all five x86 machines `skull-saints`
