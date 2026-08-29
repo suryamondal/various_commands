@@ -47,6 +47,11 @@
   /* Annotations under a bar, deliberately quieter than a value in its own
      column. Everything that is a value in its own right stays at table size. */
   td small { font-size:.85em; color:var(--muted); }
+  /* First row of a hardware group. Extra space above, not a rule: every td
+     already carries a border-bottom, so a border-top here would render as a
+     doubled 2px line that reads like a rendering fault rather than a
+     deliberate divider. Whitespace separates without adding furniture. */
+  tr.grp td { padding-top:1.15rem; }
   .bar > i { display:block; height:100%; background:var(--bar); }
   .no  { color:var(--warn); font-weight:600; }
   .tag { font-size:.7rem; color:var(--muted); border:1px solid var(--rule);
@@ -129,10 +134,40 @@ async function tick() {
     document.getElementById('sub').textContent =
       cores + ' CPU cores  ·  running ' + q.running + ', idle ' + q.idle +
       ', held ' + q.held + '  ·  sampled ' + d.generated;
-    document.getElementById('rows').innerHTML = d.machines.map(function (m) {
+    // Group by hardware type, then natural order inside each group.
+    //
+    // The type column is the axis people actually scan - "are any N100s free",
+    // "is the Ryzen busy", "what are the Macs doing" - and a flat A-Z list
+    // interleaves the classes, so that question costs a read of every row.
+    // Grouping answers it by position instead.
+    //
+    // Groups are ordered ALPHABETICALLY by board class, deliberately not by
+    // capability or core count. A capability ordering reads better on the day
+    // it is written and then reshuffles whenever a machine joins, leaves or is
+    // reclassified - and a dashboard whose rows move between glances costs more
+    // than the ordering gains. Alphabetical is arbitrary but STABLE.
+    //
+    // Machines publishing no board sort last as one trailing group, via the
+    // \uffff sentinel: an empty key would sort them to the TOP, putting the
+    // least-identified hardware where the eye lands first.
+    //
+    // numeric:true is the "natural" half - it orders varaha-hpc-2 before
+    // varaha-hpc-10, which a plain string comparison reverses.
+    const NO_BOARD = '\uffff';
+    const rows = d.machines.slice().sort(function (a, b) {
+      const ab = a.board || NO_BOARD, bb = b.board || NO_BOARD;
+      if (ab !== bb) return ab.localeCompare(bb, undefined, {numeric: true});
+      return (a.machine || '').localeCompare(b.machine || '', undefined, {numeric: true});
+    });
+    let prevBoard = null;
+    document.getElementById('rows').innerHTML = rows.map(function (m) {
+      const thisBoard = m.board || NO_BOARD;
+      // Not on the first row: that gap would read as a header margin.
+      const newGroup = prevBoard !== null && thisBoard !== prevBoard;
+      prevBoard = thisBoard;
       const used = Math.max(0, m.cpus_total - m.cpus_free);
       const memUsed = m.mem_total ? 1 - (m.mem_adv / m.mem_total) : 0;
-      return '<tr>' +
+      return '<tr' + (newGroup ? ' class="grp"' : '') + '>' +
         '<td>' + m.machine + (m.ledger ? '<span class="tag">ledger</span>' : '') + '</td>' +
         // Board first when the machine publishes one, so the cell reads most
         // specific to least: jetson - Ubuntu24 - aarch64. Machines with no board
