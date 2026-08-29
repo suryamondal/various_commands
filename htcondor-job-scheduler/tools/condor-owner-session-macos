@@ -1,0 +1,201 @@
+#!/bin/sh
+# STARTD_CRON job: the macOS variant of condor-owner-session.
+#
+# A SECOND VARIANT IS UNAVOIDABLE HERE, and that is worth stating plainly
+# because the Linux script argues the opposite case. Its comment warns that a
+# per-host variant would reintroduce a risk the policy doc lists as resolved.
+# That warning is about PER-HOST files. This one is per-OS, and it is forced:
+# every single input the Linux script reads is absent on macOS.
+#
+#   /proc/meminfo        -> does not exist        -> vm_stat + sysctl
+#   /proc/pressure/*     -> no PSI in this kernel -> pressure level / omitted
+#   loginctl             -> no systemd            -> console user + HID idle
+#   ss                   -> not shipped           -> netstat
+#
+# The CONTRACT is what must stay identical, not the implementation: this script
+# publishes exactly the same attribute names, in the same units, with the same
+# meanings, so scripts/50-worker*.config needs no macOS-specific policy branch.
+# Every threshold in START, SUSPEND and PREEMPT keeps working unchanged.
+
+ACTIVE=False
+REASON=none
+
+# 1. Screen Sharing is the macOS analogue of RDP. Same idea as the Linux
+#    script's port 3389 test: an ESTABLISHED connection means a human is
+#    driving this machine from somewhere else right now.
+#    netstat, not ss - macOS ships the BSD tool and has no iproute2.
+if netstat -an -p tcp 2>/dev/null | awk '$6 == "ESTABLISHED" && $4 ~ /\.5900$/ { found = 1 } END { exit !found }'; then
+    ACTIVE=True
+    REASON=screensharing
+fi
+
+# 2. Local presence. THIS DELIBERATELY DIFFERS FROM THE LINUX SCRIPT, and the
+#    difference is deliberate. It affects what the attribute MEANS, not whether
+#    this machine accepts work.
+#
+#    On Linux the test is "does an active graphical session exist". That test
+#    does not port: macOS has no logged-out state to speak of. The console user
+#    stays logged in across reboots and through every screen lock, so a direct
+#    translation would report True permanently.
+#
+#    Note that reporting True permanently would NOT block this machine, because
+#    the worker configs deliberately leave OwnerSessionActive OUT of START -
+#    desktop users do not log out on Linux either, and the pool learned that
+#    already. Admission is contention-driven; presence alone costs nothing.
+#
+#    What a permanent True would destroy is the attribute's DIAGNOSTIC value,
+#    which is the reason it is still published. "Why did this machine stop
+#    taking work" is answered by reading the slot ad, and an attribute that is
+#    always True answers nothing. So presence is measured by ACTUAL INPUT here:
+#    HIDIdleTime is nanoseconds since the last keyboard or mouse event, so
+#    someone logged in but away from the desk reads correctly as absent.
+#
+#    This also leaves the option open. If this machine ever does need presence
+#    gating - it is somebody's daily desktop, unlike the headless N100s - the
+#    attribute is already trustworthy enough to gate on. On Linux it is not.
+IDLE_THRESHOLD=900
+
+CONSOLE=$(stat -f%Su /dev/console 2>/dev/null)
+IDLE=$(ioreg -c IOHIDSystem -d 1 2>/dev/null | \
+       awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { print int($NF / 1000000000); exit } }')
+
+# No console user, or the login window (root/_windowserver), means nobody is on
+# the machine locally. An unreadable HIDIdleTime is treated as PRESENT, not
+# absent: failing towards the owner is the safe direction.
+case "$CONSOLE" in
+    ''|root|_windowserver|loginwindow) : ;;
+    *)
+        if [ -z "$IDLE" ] || [ "$IDLE" -lt "$IDLE_THRESHOLD" ]; then
+            ACTIVE=True
+            if [ "$REASON" = "none" ]; then REASON=console; else REASON=both; fi
+        fi
+        ;;
+esac
+
+# 3. Available memory. THE KERNEL'S OWN NUMBER, not a reconstruction from
+#    vm_stat - and the difference is not cosmetic. Measured on this machine:
+#
+#        vm_stat free+inactive+speculative+purgeable   4845 MB  (30%)
+#        memory_pressure "free percentage"             9666 MB  (59%)
+#
+#    The vm_stat sum is the obvious port of Linux MemAvailable, and it is WRONG
+#    here for two reasons: it omits clean file-backed pages that are ACTIVE -
+#    evictable at no cost, but not counted free - and it ignores the compressor
+#    entirely, which on this box was holding 14.0 GB of data in 4.5 GB of pages.
+#    macOS deliberately keeps very little memory free; it compresses rather than
+#    idling pages, so a free-page count reads as permanent scarcity on a machine
+#    that is not short of memory at all.
+#
+#    This was not theoretical. With the vm_stat figure this host advertised
+#    Memory = 0 and START evaluated FALSE against the pool's 25% floor: it
+#    joined the pool, read healthy in condor_status, and would never have run a
+#    single job - the exact "parses fine, does nothing" failure this pool keeps
+#    hitting. The value also COLLAPSES under load, reading 1268 MB while the
+#    startd ran its own kflops/mips benchmarks, so the machine would have
+#    flapped in and out of eligibility even once past the floor.
+#
+#    memory_pressure is what macOS itself consults to decide memory is short,
+#    which makes it the honest analogue of MemAvailable and keeps admission
+#    consistent with the eviction signal below - both now read the kernel's
+#    view rather than two different guesses. Sampled every 3s it held 58-59%.
+MEMTOTAL=$(sysctl -n hw.memsize 2>/dev/null | awk '{ printf "%d", $1 / 1048576 }')
+
+FREEPCT=$(memory_pressure 2>/dev/null | awk '/free percentage/ { gsub(/[^0-9]/, "", $NF); print $NF; exit }')
+case "$FREEPCT" in ''|*[!0-9]*) FREEPCT= ;; esac
+
+if [ -n "$FREEPCT" ] && [ -n "$MEMTOTAL" ]; then
+    MEMAVAIL=$(( MEMTOTAL * FREEPCT / 100 ))
+else
+    # Fallback only, for a macOS where memory_pressure is missing or its output
+    # has been reworded. Deliberately kept: it needs no external tool and cannot
+    # fail. But it is the pessimistic figure above, so if this branch is ever
+    # taken expect the machine to under-advertise rather than over-commit -
+    # which is the safe direction to be wrong in.
+    PAGESIZE=$(sysctl -n hw.pagesize 2>/dev/null)
+    : "${PAGESIZE:=16384}"
+    MEMAVAIL=$(vm_stat 2>/dev/null | awk -v ps="$PAGESIZE" '
+        /^Pages free:/        { gsub(/\./, "", $3); p += $3 }
+        /^Pages inactive:/    { gsub(/\./, "", $3); p += $3 }
+        /^Pages speculative:/ { gsub(/\./, "", $3); p += $3 }
+        /^Pages purgeable:/   { gsub(/\./, "", $3); p += $3 }
+        END { printf "%d", p * ps / 1048576 }')
+fi
+
+# 4. Memory pressure. macOS has no PSI, but it exposes the kernel's own pressure
+#    verdict, which is the signal macOS itself acts on when it decides to start
+#    killing processes. Mapped onto the percentage scale the policy expects:
+#
+#      1 normal   -> 0    well clear of the > 10.0 eviction threshold
+#      2 warn     -> 5    visible on the dashboard, does NOT evict
+#      4 critical -> 50   evicts
+#
+#    warn is deliberately kept BELOW the threshold. macOS reaches "warn" readily
+#    on a machine with a healthy amount of cache in use, and evicting there would
+#    throw away work for a condition that is normal on this OS. "critical" is the
+#    state where the kernel is about to start killing things, and that genuinely
+#    warrants discarding a job.
+PLEVEL=$(sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)
+case "$PLEVEL" in
+    4) PSI=50 ;;
+    2) PSI=5  ;;
+    *) PSI=0  ;;
+esac
+
+# 4b. CPU pressure has NO macOS equivalent at all - there is no per-resource
+#     stall accounting outside Linux PSI. Publish 0 rather than inventing a
+#     number: the START expression's `HostCpuPsiAvg10 < 20.0` term then reduces
+#     to always-true and admission falls back to the load-average terms, which
+#     is exactly what the Linux script already does on a kernel built without
+#     CONFIG_PSI. This is a documented degradation, not a silent one.
+#
+#     The fallback is sound here because the load terms remain fully functional:
+#     TotalLoadAvg and TotalCondorLoadAvg come from Condor, not from /proc.
+CPUPSI=0
+
+# 5/6. Disk. df -Pm is POSIX and behaves identically on both platforms, so this
+#      section is a straight copy of the Linux one - including the SPOOL note:
+#      the startd policy cannot protect SPOOL, because condor_submit -spool
+#      writes there before any matchmaking happens.
+EXECDIR=$(condor_config_val EXECUTE 2>/dev/null)
+[ -d "$EXECDIR" ] || EXECDIR=/opt/condor/local/execute
+[ -d "$EXECDIR" ] || EXECDIR=/
+DISKAVAIL=$(df -Pm "$EXECDIR" 2>/dev/null | awk 'NR==2 { print $4 }')
+DISKTOTAL=$(df -Pm "$EXECDIR" 2>/dev/null | awk 'NR==2 { print $2 }')
+
+SPOOLDIR=$(condor_config_val SPOOL 2>/dev/null)
+[ -d "$SPOOLDIR" ] || SPOOLDIR=/opt/condor/local/spool
+[ -d "$SPOOLDIR" ] || SPOOLDIR=/
+SPOOLAVAIL=$(df -Pm "$SPOOLDIR" 2>/dev/null | awk 'NR==2 { print $4 }')
+SPOOLTOTAL=$(df -Pm "$SPOOLDIR" 2>/dev/null | awk 'NR==2 { print $2 }')
+
+# --- Memory: replace the request LEDGER with measured headroom -------------
+# Identical reasoning to the Linux script, and identical arithmetic. See there
+# for the full argument; the short version is that the startd advertises
+# capacity minus what has been PROMISED to dynamic slots, which is an accounting
+# figure rather than a measurement, so a machine whose jobs over-requested
+# refuses work while sitting idle.
+#
+# The schedd test is what keeps one script correct on every host, so it is kept
+# here even though this machine will never run a schedd. Detected, not
+# configured: a per-host variant is what the policy doc warns against.
+RESMEM=$(condor_config_val RESERVED_MEMORY 2>/dev/null)
+case "$RESMEM" in ''|*[!0-9]*) RESMEM=0 ;; esac
+MEMFLOOR=$(( ${MEMTOTAL:-0} / 4 ))
+[ "$RESMEM" -gt "$MEMFLOOR" ] && MEMFLOOR=$RESMEM
+ADVMEM=$(( ${MEMAVAIL:-0} - MEMFLOOR ))
+[ "$ADVMEM" -lt 0 ] && ADVMEM=0
+
+case " $(condor_config_val DAEMON_LIST 2>/dev/null) " in
+    *SCHEDD*) : ;;
+    *)        echo "Memory = ${ADVMEM}" ;;
+esac
+echo "OwnerSessionActive = $ACTIVE"
+echo "OwnerSessionReason = \"$REASON\""
+echo "HostMemAvailMB = ${MEMAVAIL:-0}"
+echo "HostMemTotalMB = ${MEMTOTAL:-0}"
+echo "HostMemPsiAvg10 = ${PSI:-0}"
+echo "HostCpuPsiAvg10 = ${CPUPSI:-0}"
+echo "HostDiskAvailMB = ${DISKAVAIL:-0}"
+echo "HostDiskTotalMB = ${DISKTOTAL:-0}"
+echo "HostSpoolAvailMB = ${SPOOLAVAIL:-0}"
+echo "HostSpoolTotalMB = ${SPOOLTOTAL:-0}"

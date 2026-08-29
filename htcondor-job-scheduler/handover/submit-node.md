@@ -657,11 +657,20 @@ Machines here are people's desktops and reclaim themselves without warning:
   roughly what you need; nothing will OOM-kill you at that number.
 - Jobs are pinned to the submitting machine's architecture by default, so an
   x86_64 client will not accidentally match ARM workers.
+- They are pinned to **Linux** by default too. `condor_submit` adds
+  `(OpSys == "LINUX")` unless your requirements already mention `OpSys`, so the
+  pool's Mac mini is invisible to an ordinary job. Reaching it is opt-in:
+  `requirements = (OpSys == "macOS")`. Note `macOS`, not `OSX`. Check what your
+  job will actually ask for with `condor_submit -dry-run /dev/stdout <file>.sub`
+  before queueing — this is the one requirement people get wrong, and the
+  symptom is a job that sits Idle forever against a machine that is Unclaimed.
 
 ### Software already on every worker
 
 Installed under `/opt/products` on all seven x86\_64 machines, identical
-version on each. **Call these by absolute path.** They are deliberately not
+version on each, and on the Mac mini at the same paths but **not** the same
+versions — see the warning at the end of this section. **Call these by
+absolute path.** They are deliberately not
 assumed to be on `PATH` inside a job, and a job that means a particular version
 should say which.
 
@@ -693,6 +702,28 @@ tidied, a bare `yosys` resolved to four different versions across seven
 machines, and jobs synthesised differently depending on placement. If you need
 a version that is not installed, ask rather than installing your own on one
 machine.
+
+**The Mac mini is currently an exception, deliberately and temporarily.** It
+was built against the newest release tags so the Linux hosts could be brought
+up to them afterwards, so right now the pool is not uniform:
+
+| | Linux workers | Mac mini |
+|---|---|---|
+| yosys | `v0.66` | `v0.68` |
+| nextpnr-ecp5 | `v0.10` | `v0.11` |
+| prjtrellis | `1.4-79-g56bb170` | same |
+| openEMS | `v0.37.0-rc1-2-g7b051bb` | same |
+
+For openEMS this does not matter — same commit, and the numerical result was
+identical. For the FPGA flow it does: yosys 0.68 and 0.66 do not emit
+byte-identical netlists, so a synthesis job would produce different output
+depending on where it landed.
+
+**In practice the default protects you.** An ordinary job carries
+`OpSys == "LINUX"` and cannot reach the Mac at all, so this can only bite
+someone who has explicitly opted in. Until the Linux hosts are upgraded, do not
+target the Mac for FPGA work you intend to compare against earlier results.
+openEMS is safe to send there, and considerably faster.
 
 ---
 
