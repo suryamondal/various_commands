@@ -140,6 +140,12 @@ daemons start cleanly, and the machine simply never authenticates to the pool.
 
 `CONDOR_IDS = 442.442` and the `/opt/condor` paths go in the same file.
 
+The per-host config also needs one macOS-only line, for the reason in trap 6:
+
+```
+STARTER_JOB_ENVIRONMENT = "HOME=/var/empty"
+```
+
 ## 6. The presence/memory/disk script
 
 `/usr/local/bin/condor-owner-session` — **same path as every Linux host, so the
@@ -279,6 +285,49 @@ to match on, and `HostBoardClass` is what to use when you mean the hardware.
 LocalHostName` is the value that matters. Changing `ComputerName` is visible to
 the machine's user in Finder and AirDrop for no functional gain.
 
-**6. sudo is cached in a shared pane.** A sent `sudo` command runs immediately
+**6. yosys exits 139 under Condor while producing perfect output.** The most
+misleading failure found on these machines, and it cannot be reproduced by
+hand.
+
+yosys on macOS links `libedit` and calls `clear_history()` from `main()`
+unconditionally - batch mode included - on the way *out*. Condor sets no `HOME`
+for a job, so the history state is never initialised and that call dereferences
+NULL:
+
+```
+EXC_BAD_ACCESS (SIGSEGV) at 0x48
+  libedit.3.dylib   history
+  libedit.3.dylib   clear_history
+  yosys             main
+```
+
+Three things make this expensive to diagnose:
+
+*The work finishes first.* Measured with `HOME` unset, `HOME=/var/empty` and
+`HOME=<scratch>`: all three wrote a byte-identical 718964-byte netlist, and
+only the unset case died. The job's output is complete and correct on disk, and
+Condor still fails it on the exit code.
+
+*It cannot be reproduced from a shell*, because a login shell always has `HOME`.
+Running the identical command as yourself on the same machine always works.
+
+*Linux is immune*, so testing there proves nothing - the Linux workers link GNU
+readline, which tolerates the uninitialised state.
+
+Fix worker-side, not per-job:
+
+```
+STARTER_JOB_ENVIRONMENT = "HOME=/var/empty"
+```
+
+Any value works; `/var/empty` is `nobody`'s real home and needs no write access.
+Putting it here costs one line on each Mac instead of an `environment = ...`
+line in every submit file anyone ever writes.
+
+Watch for this when the Linux hosts move to yosys 0.68: the immunity comes from
+the *library they link*, not the version, so a Linux build that picks up libedit
+would inherit the same crash.
+
+**7. sudo is cached in a shared pane.** A sent `sudo` command runs immediately
 if the timestamp is still live, with no prompt to validate at. Prefix with
 `sudo -k` as well as suffixing it.
