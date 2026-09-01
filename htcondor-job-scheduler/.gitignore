@@ -1,5 +1,11 @@
 # The host list names real machines on private networks - keep it local.
 condor-host-list
+
+# Shared submit fragment. It pins jobs to named machines, so it carries real
+# hostnames for the same reason condor-host-list does. tools/sanitise.sh flags
+# it on every run - it scans untracked-but-not-ignored files precisely because
+# those are what a `git add .` would sweep in.
+tools/pool-common.inc
 # Command records, captured output, and staged helper scripts name real
 # machines too. Sanitise before tracking any of it.
 logs/
