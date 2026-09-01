@@ -684,11 +684,22 @@ iverilog      /opt/products/iverilog/v13.0/install/bin/iverilog
 vvp           /opt/products/iverilog/v13.0/install/bin/vvp
 ```
 
-**`iverilog` is the one where the absolute path really matters.** Most machines
-also carry Ubuntu's `iverilog` at `/usr/bin/iverilog`, and that is **12.0** -
-released 2022. The pool's is **13.0**. A bare `iverilog` in a job will find the
-apt one, so a simulation could behave differently depending on which path the
-job used, on the same machine. Call it by the path above.
+**A bare `iverilog` will not work, and that is intentional.** Ubuntu's package
+(version **12.0**, from 2022) has been removed from every pool machine, so:
+
+```
+$ iverilog
+iverilog: command not found          <- expected
+```
+
+Both used to be installed. A job calling a bare `iverilog` silently got 12.0
+while the pool's own builds are 13.0, which meant the same job could behave
+differently depending on which path it used, **on the same machine**. Rather
+than leave two versions and hope, the distro copy is gone: a job that forgets
+the path now fails immediately and visibly instead of producing quietly
+different results.
+
+The same reasoning applies to every tool in this list. Use the absolute path.
 
 A worked ECP5 flow, verified running on the pool as `nobody`:
 

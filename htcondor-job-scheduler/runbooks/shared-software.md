@@ -277,9 +277,24 @@ running the tool, not by seeing the build succeed.
 on which path it used, on the same machine.
 
 This is the same failure as the yosys/PATH problem in the section above, with
-an extra wrinkle: here the wrong version is not a stale symlink but a
-legitimately installed distro package that cannot simply be removed, because
-other things may depend on it. **Absolute paths are the only reliable answer.**
+an extra wrinkle: the wrong version is not a stale symlink but a legitimately
+installed distro package.
+
+**Resolved by removing the distro copy.** `apt-get purge iverilog` on every
+machine that had it, so a bare `iverilog` now returns `command not found`
+rather than silently running 12.0. Loud failure beats silent version skew - a
+job that forgets the absolute path fails immediately instead of producing
+quietly different output.
+
+Check what else depends on it before doing this. `apt-get -s purge <pkg>` as
+root lists everything that would go; abort if anything but the package itself
+appears. On this pool nothing else depended on it, but a cascading removal
+discovered after the fact is much harder to unpick.
+
+Note the asymmetry with **openEMS and yosys**, where no distro package exists
+to conflict with. iverilog, gtkwave and verilator all have Ubuntu packages, so
+each carries this risk. **Absolute paths remain the rule regardless** - removal
+protects against forgetting, it does not replace the convention.
 
 ## Two traps met while doing this
 
