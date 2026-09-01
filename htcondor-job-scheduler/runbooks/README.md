@@ -105,6 +105,62 @@ the policy is inert. Appearing in `condor_status` and **running a job** are
 independent properties — land one before calling the machine done. Every
 failure listed below except the token one passes the first half of this step.
 
+## Fleet maintenance: three things that bite during updates
+
+These are not install-time problems. They appear when you update machines that
+are already working, and all three were found the hard way.
+
+**1. The boot splash can deadlock a package upgrade.**
+`plymouth-quit-wait.service` runs `plymouth --wait` with `TimeoutSec=0` - no
+limit - and blocks until the boot splash exits. On a machine with **no monitor
+attached** that handoff never completes, so the unit runs forever. Because
+systemd serialises jobs, anything queued behind it waits too:
+
+```
+plymouth-quit-wait (running, forever)
+  power-profiles-daemon restart (queued by the package's postinst)
+    deb-systemd-invoke -> postinst -> dpkg -> apt-get      all waiting
+```
+
+Measured: two machines sat like this, one with `apt` blocked for 12 minutes at
+0.03 load. It also means `multi-user.target` is never reached, so
+`systemctl is-system-running` reports **`starting`** indefinitely - one machine
+had been "starting" for two weeks.
+
+To clear it, issue `plymouth quit` **directly**. Do not use `systemctl`: that
+call becomes another queued job behind the same blockage.
+
+`systemctl mask plymouth-quit-wait.service` prevents it permanently on
+headless machines, at the cost of console-handoff tidiness that a machine with
+nothing plugged in does not need. Machines that DO have a monitor should keep
+it.
+
+**2. `unattended-upgrades` collides with deliberate updates.**
+It holds the dpkg lock, and a fleet update that hits a locked machine fails
+outright with `E: Could not get lock ... held by process N (apt)`. Observed
+running for **fifteen days** on one machine and one day on another.
+
+This pool now disables it (service, `apt-daily*.timer`, and both
+`APT::Periodic` keys). The trade-off is explicit: **security updates no longer
+install themselves**, and patching becomes a scheduled operator task. On a pool
+where a worker silently upgrading HTCondor past the central manager would be
+harmful, that is the right way round - but it is now an obligation.
+
+Stop it with `systemctl`, never `SIGKILL`: it may be mid-dpkg, and killing it
+there leaves a broken package database. Run `dpkg --audit` afterwards.
+
+**3. A wait-online unit with nothing to wait for costs two minutes a boot.**
+`systemd-networkd-wait-online` and `NetworkManager-wait-online` both feed
+`network-online.target`, and the target waits for **all** enabled ones. If
+networkd is enabled but manages no links - `networkctl` shows every interface
+`unmanaged` - its wait can only ever time out.
+
+Measured on one machine: 2min 00.08s of a 2min 33s boot, versus 19s on its
+identical neighbour. Disabling the unit that has nothing to manage brought it
+to 19.6s. Check with `systemd-analyze blame` **and** `critical-chain` - blame
+ranks duration, not blocking, so a slow unit off the critical path is harmless
+while a shorter one on it is not.
+
 ## The five things that go wrong every time
 
 **A user token is not a daemon token.** `condor_token_create -identity

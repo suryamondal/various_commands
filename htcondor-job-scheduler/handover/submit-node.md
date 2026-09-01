@@ -667,9 +667,8 @@ Machines here are people's desktops and reclaim themselves without warning:
 
 ### Software already on every worker
 
-Installed under `/opt/products` on all seven x86\_64 machines, identical
-version on each, and on both Mac minis at the same paths but **not** the same
-versions — see the warning at the end of this section. **Call these by
+Installed under `/opt/products` on all nine Linux machines and both Mac minis,
+at the same paths and the **same pinned versions** everywhere. **Call these by
 absolute path.** They are deliberately not
 assumed to be on `PATH` inside a job, and a job that means a particular version
 should say which.
@@ -678,10 +677,18 @@ should say which.
 openEMS       /opt/products/openEMS/bin/openEMS
               /opt/products/openEMS/venv/bin/python     (import openEMS, CSXCAD)
 
-yosys         /opt/products/yosys/v0.66/install/bin/yosys
-nextpnr-ecp5  /opt/products/nextpnr/v0.10/install/bin/nextpnr-ecp5
+yosys         /opt/products/yosys/v0.68/install/bin/yosys
+nextpnr-ecp5  /opt/products/nextpnr/v0.11/install/bin/nextpnr-ecp5
 ecppack       /opt/products/prjtrellis/1.4-79-g56bb170/install/bin/ecppack
+iverilog      /opt/products/iverilog/v13.0/install/bin/iverilog
+vvp           /opt/products/iverilog/v13.0/install/bin/vvp
 ```
+
+**`iverilog` is the one where the absolute path really matters.** Most machines
+also carry Ubuntu's `iverilog` at `/usr/bin/iverilog`, and that is **12.0** -
+released 2022. The pool's is **13.0**. A bare `iverilog` in a job will find the
+apt one, so a simulation could behave differently depending on which path the
+job used, on the same machine. Call it by the path above.
 
 A worked ECP5 flow, verified running on the pool as `nobody`:
 
@@ -703,29 +710,28 @@ machines, and jobs synthesised differently depending on placement. If you need
 a version that is not installed, ask rather than installing your own on one
 machine.
 
-**The Mac minis are currently an exception, deliberately and temporarily.** They
-were built against the newest release tags so the Linux hosts could be brought
-up to them afterwards, so right now the pool is not uniform:
+**The pool is now uniform, and that is worth knowing because it was not
+always.** Every machine - nine Linux workers and both Mac minis, x86_64 and
+arm64 - runs the same pinned versions:
 
-| | Linux workers | both Mac minis |
-|---|---|---|
-| yosys | `v0.66` | `v0.68` |
-| nextpnr-ecp5 | `v0.10` | `v0.11` |
-| prjtrellis | `1.4-79-g56bb170` | same |
-| openEMS | `v0.37.0-rc1-2-g7b051bb` | same |
+| | all eleven machines |
+|---|---|
+| yosys | `v0.68` (git sha1 `38e001a6f`) |
+| nextpnr-ecp5 | `nextpnr-0.11` |
+| prjtrellis | `1.4-79-g56bb170` |
+| iverilog | `v13.0` |
+| openEMS | `v0.37.0-rc1-2-g7b051bb` |
 
-For openEMS this does not matter — same commit, and the numerical result was
-identical. For the FPGA flow it does: yosys 0.68 and 0.66 do not emit
-byte-identical netlists, so a synthesis job would produce different output
-depending on where it landed. The two Macs agree with each other - verified
-byte-identical, same sha256, on an ECP5 flow run through Condor on both - so
-placement between them is safe; it is Mac-versus-Linux that differs.
+**Verified, not assumed.** The same ECP5 design was run through Condor on a
+Linux worker and on a Mac mini, and the resulting bitstreams were byte-identical
+- same sha256, same `pnr` size. The intermediate synthesis JSON differs by
+exactly 16 bytes, which is the compiler string yosys stamps into it
+(`GNU /usr/bin/c++ 13.3.0` vs `AppleClang ... 17.0.0.17000013`); it carries no
+logical difference and does not reach the bitstream.
 
-**In practice the default protects you.** An ordinary job carries
-`OpSys == "LINUX"` and cannot reach the Mac at all, so this can only bite
-someone who has explicitly opted in. Until the Linux hosts are upgraded, do not
-target the Mac for FPGA work you intend to compare against earlier results.
-openEMS is safe to send there, and considerably faster.
+So **where a job lands no longer changes its result.** For a period the Macs ran
+newer FPGA tools than the Linux hosts and placement did matter; that gap is
+closed.
 
 ---
 

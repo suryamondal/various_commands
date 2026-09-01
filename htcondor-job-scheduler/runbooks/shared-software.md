@@ -233,6 +233,54 @@ differ. Sizes to the byte cannot.
 A cheap job that reports `id -un`, runs the binary, and counts
 `ldd ... | grep -c "not found"` is enough.
 
+## Upstream code that only breaks on one platform
+
+Two tools in this pool needed a source change to build or run on macOS, and
+**neither failure is visible from Linux**. Both are the same shape: an upstream
+assumption that held for years until a toolchain default changed.
+
+**iverilog 13.0 does not compile on macOS as shipped.** `driver/main.c` picks a
+platform-specific way to find its own executable:
+
+```
+#if   defined(__MINGW32__)  -> GetModuleFileName      (includes <windows.h>)
+#elif defined(__APPLE__)    -> _NSGetExecutablePath   <- no include for it
+#else                       -> readlink /proc/self/exe
+```
+
+The Apple branch never includes `<mach-o/dyld.h>`, where that function is
+declared. That was historically an implicit-declaration *warning*; the build
+now runs `gcc -std=gnu23`, and **C23 makes implicit declarations a hard
+error**. So code that compiled for years fails with:
+
+```
+main.c:1066: error: use of undeclared identifier '_NSGetExecutablePath'
+```
+
+Add the guarded include before compiling. The patch lives only in the build
+tree, so a fresh clone needs it again.
+
+**yosys on macOS crashes under Condor after producing correct output** - the
+libedit/`HOME` bug, written up in [worker-mac-mini.md](worker-mac-mini.md)
+trap 6.
+
+The lesson for both: **when a tool is built on more than one OS, the second OS
+is where upstream's untested paths live.** Budget for a patch, and verify by
+running the tool, not by seeing the build succeed.
+
+## Also check the system copy is not what jobs actually get
+
+`iverilog` is the sharpest example in this pool. Ubuntu ships `iverilog` at
+`/usr/bin/iverilog` and it is **12.0** (2022); the pool builds **13.0** into
+`/opt/products`. Both are present on most machines. A job calling a bare
+`iverilog` gets the apt one - so the same job can behave differently depending
+on which path it used, on the same machine.
+
+This is the same failure as the yosys/PATH problem in the section above, with
+an extra wrinkle: here the wrong version is not a stale symlink but a
+legitimately installed distro package that cannot simply be removed, because
+other things may depend on it. **Absolute paths are the only reliable answer.**
+
 ## Two traps met while doing this
 
 **Do not probe with a flag you have not checked.** Twice now. `openEMS --version` prints
